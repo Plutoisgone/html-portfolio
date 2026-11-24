@@ -82,6 +82,42 @@ Expected: `Applying migration 6`, then each file ends with `ROLLBACK` and no `ER
 
 ---
 
+### Task 1A: Separate login service — only it may create sessions (owner decision 2026-11-24)
+
+Added after the Task 1 review found that the web app's DB role has `INSERT ON sessions`: anyone holding
+only the app DB password can insert a forged `via='sso'` session for a super admin, which
+`admin_actor` and `session_customer_ids` then accept. This defeats the plan decision "a stolen DB
+password alone reads nothing" and the Phase 0.1 claim in PENETRATION_TEST_REPORT.md P7. Owner chose
+to move session creation into its own service.
+
+**Files:**
+- Create: `app/siem/auth_main.py` (`create_app()` for the login service: mounts only the `auth.router` routes `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/breakglass`, plus `/healthz`)
+- Modify: `app/siem/main.py` (web app no longer mounts `auth.router`; keeps `/login` and `/breakglass` pages, which post to `/auth/*`), `app/siem/auth.py` (session creation and break-glass consumption use the auth DB pool), `app/siem/config.py` (auth service reads `SIEM_DB_AUTH_USER` / secret `db_auth_password`; web app no longer requires `oidc_client_secret`)
+- Modify: `app/siem/migrate.py` (new role grants: `auth_role`), `deploy/compose.yaml` (new service `auth` from `mini-siem-app:local`, command `uvicorn siem.auth_main:create_app --factory …`, `*hardening`, networks `edge` + `backend`, secrets `db_auth_password`, `oidc_client_secret`, `session_secret`/state secret as the app uses today; `app` loses `oidc_client_secret`), `deploy/caddy/Caddyfile` (`handle /auth/*` → `auth:8000`, everything else → `app:8000`, security headers on both), `deploy/setup.sh` (generate `db_auth_password`, create role, pg_hba line for the auth role from `BACKEND_SUBNET` only), `deploy/postgres/01-app-role.sh`, `deploy/.env.example` (`SIEM_DB_AUTH_USER=siem_auth`), `deploy/verify-deployment.sh` (auth container checks)
+- Test: `app/tests/test_security_regression.py`, `app/tests/test_oidc_integration.py` and `app/tests/test_auth.py` (target the login-service app), `app/tests/db_acceptance.sql`, `app/tests/live/test_live_hardening.py`, `app/tests/smoke_test.py`
+- Docs: `VULNERABILITY_REMEDIATION.md` (new finding **N12**, High: forged session via app DB role — found in Phase 1 review, fixed here), `PENETRATION_TEST_REPORT.md` (correct P7: the original test did not cover a forged session row), `THREAT_MODEL.md`, `SECURITY_ARCHITECTURE.md`, `DEPLOYMENT_GUIDE.md` (new `.env` key, new service), `CHANGELOG.md`
+
+**Interfaces:**
+- Produces:
+  - DB role `auth_role` (env `SIEM_DB_AUTH_USER`) grants, exactly: `SELECT ON users`; `UPDATE (last_login_at) ON users`; `SELECT, INSERT, DELETE ON sessions`; `SELECT, INSERT (<AUDIT_INSERT_COLUMNS>) ON audit_log`; `SELECT ON audit_head`; `EXECUTE` on `bootstrap_first_admin(uuid, text)` and `consume_breakglass(bytea)`.
+  - Web app role: **loses** `INSERT ON sessions` and `EXECUTE` on `bootstrap_first_admin` and `consume_breakglass`; keeps `SELECT, DELETE ON sessions` and `UPDATE (last_seen_at) ON sessions`.
+  - `grant_roles` requires five distinct runtime roles plus the owner.
+  - The web app container has no `oidc_client_secret` and no `db_auth_password`; the auth container has no `db_app_password`.
+  - URLs unchanged for users: `/auth/login`, `/auth/callback` (Entra redirect URI unchanged), `/auth/logout`, `/auth/breakglass`.
+
+- [ ] **Step 1: Write failing tests**
+  - `db_acceptance.sql`: as app role, `INSERT INTO sessions …` → `42501`; `SELECT bootstrap_first_admin(...)` and `SELECT consume_breakglass(...)` → `42501`; as auth role, `UPDATE users SET role=…` → `42501`, `SELECT … FROM customers` → 0 rows (RLS, no token).
+  - `test_live_hardening.py::test_app_password_cannot_forge_session`: psql as app role inserting a `via='sso'` session for the super admin → `42501`; then `SET siem.session` to that token → `session_customer_ids` returns `{}` and `admin_create_customer` raises `42501`.
+  - `test_live_hardening.py::test_service_secrets_are_separated`: `docker exec` listing `/run/secrets` — app has no `oidc_client_secret`/`db_auth_password`; auth has no `db_app_password`.
+  - `test_security_regression.py`: expected grant sets for both roles as above.
+- [ ] **Step 2: Run and confirm failure** — offline: `python -m pytest -q tests/test_security_regression.py` → FAIL; SQL file on the lab → `ERROR` at the first new check.
+- [ ] **Step 3: Implement** the files listed. Keep `auth.py` logic unchanged apart from which pool it uses; no new auth features.
+- [ ] **Step 4: Run everything** — offline suite PASS; lab redeploy (`lab-up.sh`); all SQL acceptance files PASS; full live suite PASS (existing tests updated only where routes moved service); smoke test PASS through Caddy; `verify-deployment.sh` shows the `auth` container non-root, CapEff 0, read-only, NoNewPrivs, seccomp.
+- [ ] **Step 5: Update docs** listed under Files.
+- [ ] **Step 6: Commit** — `fix(security): only a separate login service may create sessions (N12)`
+
+---
+
 ### Task 2: Enable ClickHouse with TLS, per-service users and customer-keyed tables
 
 **Files:**

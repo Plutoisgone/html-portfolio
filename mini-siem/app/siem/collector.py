@@ -154,7 +154,7 @@ def serve(context, registry, sink):
             slots.release()
     with ThreadPoolExecutor(max_workers=MAX_CLIENTS) as pool, socket.socket(socket.AF_INET) as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(('0.0.0.0', 6514))
+        listener.bind(('0.0.0.0', 6514))  # nosec B104 - container netns; host publishes only on SIEM_BIND_IP
         listener.listen(MAX_CLIENTS)
         while True:
             conn, _ = listener.accept()

@@ -11,4 +11,5 @@ RUN --mount=type=secret,id=pip_ca,required=false \
     if [ -f /run/secrets/pip_ca ]; then export SSL_CERT_FILE=/run/secrets/pip_ca; fi \
  && if [ "$APK_UPGRADE" = "1" ]; then apk upgrade --no-cache; fi \
  && rm -f /usr/local/bin/gosu
+HEALTHCHECK --interval=10s --timeout=5s --retries=10 CMD ["pg_isready", "-U", "siem_bootstrap", "-d", "siem"]
 USER 70:70

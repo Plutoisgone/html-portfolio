@@ -1,0 +1,41 @@
+PASS  caddy      non-root user (10002:10002)
+PASS  caddy      read-only root filesystem
+PASS  caddy      not privileged
+PASS  caddy      all capabilities dropped
+PASS  caddy      effective capabilities empty (kernel)
+PASS  caddy      no_new_privs set (kernel)
+PASS  caddy      seccomp filter active (kernel mode 2)
+FAIL  caddy      AppArmor not applied ('none'); enable AppArmor on the host
+PASS  caddy      memory=256MiB pids=256
+PASS  caddy      published only on 192.0.2.2:443->8443/tcp 
+PASS  app        non-root user (10001:10001)
+PASS  app        read-only root filesystem
+PASS  app        not privileged
+PASS  app        all capabilities dropped
+PASS  app        effective capabilities empty (kernel)
+PASS  app        no_new_privs set (kernel)
+PASS  app        seccomp filter active (kernel mode 2)
+FAIL  app        AppArmor not applied ('none'); enable AppArmor on the host
+PASS  app        memory=512MiB pids=256
+PASS  worker     non-root user (10001:10001)
+PASS  worker     read-only root filesystem
+PASS  worker     not privileged
+PASS  worker     all capabilities dropped
+PASS  worker     effective capabilities empty (kernel)
+PASS  worker     no_new_privs set (kernel)
+PASS  worker     seccomp filter active (kernel mode 2)
+FAIL  worker     AppArmor not applied ('none'); enable AppArmor on the host
+PASS  worker     memory=384MiB pids=128
+PASS  postgres   non-root user (70:70)
+PASS  postgres   read-only root filesystem
+PASS  postgres   not privileged
+PASS  postgres   all capabilities dropped
+PASS  postgres   effective capabilities empty (kernel)
+PASS  postgres   no_new_privs set (kernel)
+PASS  postgres   seccomp filter active (kernel mode 2)
+FAIL  postgres   AppArmor not applied ('none'); enable AppArmor on the host
+PASS  postgres   memory=1024MiB pids=512
+PASS  network    backend is internal (no route out)
+PASS  network    collect_db is internal (no route out)
+
+4 failure(s)

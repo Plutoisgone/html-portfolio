@@ -1,25 +1,43 @@
-# Phase 1 lab candidate
+# Changelog
 
-- Added opt-in authenticated TLS syslog, bounded frames/connections/rates, certificate allowlist.
-- Added insert-only collector role, separated collector networks, PostgreSQL event storage and 24-hour retention function.
-- Added SSO super-admin event search, three heuristic rules, synthetic sender and regression tests.
-- No full auth/admin separation, vendor adapters, durable queue or live deployment verification.
+## Phase 0.1 — security-hardened release (2026-11-24)
 
-# Phase 0.1 — remediation candidate
+Base: Phase 1 lab candidate (which already contained Phase 0.1/0.2 remediation attempts). Older
+entries: `CHANGELOG_HISTORICAL.md`.
 
-- Immutable Entra object UUID provisioning and one-time bootstrap.
-- Separate worker and emergency database credentials; constrained SQL functions, transactional access revocation and audit writes.
-- Audit ID hashing, protected database head, worker-only authenticated checkpoint, atomic local persistence, snapshot-consistent offsite export.
-- PostgreSQL TLS certificate provisioning and fail-closed client validation.
-- Bounded concurrency-safe rate limiter and complete ASGI response security headers.
-- Setup directory and random secret generation fixes; additional regression tests and TLS-verifying smoke test.
-- Fresh install required; prior schema and audit evidence deliberately not rewritten.
-- Full deployment and independent production acceptance remain pending.
+### Security fixes
+- **Privileged changes enforced in the database** (N2/R2/R8): new migration 5 adds session-authenticated
+  `SECURITY DEFINER` admin functions and deferred constraint triggers that refuse to commit any role,
+  activation, user-creation or break-glass change without a same-transaction audit record; the web role
+  lost `INSERT`/`UPDATE(role,active)` on `users`; audit inserts are column-restricted.
+- **Grants reset on every deploy** so privileges removed in a release really disappear after upgrade.
+- **OIDC callback** (N1): every token validation failure (joserfc included) is audited and fails closed
+  instead of returning an unaudited HTTP 500.
+- **Integrity alarms** (N3): `audit_verification` table written by the worker every cycle; audit page shows
+  failed / stale / missing verification; warning when no heartbeat URL is configured.
+- **Worker**: 60 s cycle (was 300 s), incremental verification + hourly full re-hash, safe recovery of the
+  checkpoint crash window (N6), bounded S3 listing (N7), `python -m siem.worker --verify-once`.
+- **Rate limiter** (R5): token buckets, < 12 MB at 50,000 sources, overflow bucket instead of global lockout, IPv6 /64 grouping.
+- **Caddy**: security headers also on Caddy-generated errors (R9), `Server` header stripped, header size and upstream timeouts.
+- **PostgreSQL**: generated `pg_hba.conf` binds each role to its own Docker network (N5); hardened derived
+  image without `gosu`, with `apk upgrade` and HEALTHCHECK.
+- **Supply chain** (N4): app base moved to Debian 13 (103 → 53 HIGH, 2 → 0 CRITICAL); all images pinned by
+  digest; GitHub Actions pinned to commit SHAs; scanners run from digest-pinned images; meaningful Trivy gate;
+  Gitleaks and IaC scanning in CI; SBOMs (CycloneDX + SPDX).
+- **Host**: Docker repository key fingerprint verified (N9); auditd watch on the checkpoint directory.
+- **CLI**: `verify-audit` clearly labelled database-only (N8).
 
-## Phase 0.2 — 2026-11-24
-- Strict same-origin form submission and bounded ASGI request parsing; proxy and process resource/time limits.
-- Exact version readback and COMPLIANCE retention verification; remote checkpoint rollback detection using version listings.
-- Local-only database bootstrap superuser; restricted migration owner; new database constraints and session revalidation.
-- Management interface binding; future ClickHouse profile isolated and disabled by default.
-- Literal .env parser and restricted host config; secret redaction and stronger OIDC claim checks.
-- New regression tests, updated deployment guide, policy example and explicit production blockers.
+### New
+- `deploy/backup.sh`, `deploy/restore.sh` (N11); `deploy/verify-deployment.sh` (runtime CIS-Docker checks).
+- Tests: `tests/live/` (99 live tests), `test_oidc_integration.py`, `test_fuzz_properties.py` (Hypothesis),
+  `test_setup_script.py`, `tests/load/locustfile.py`; rewritten `db_acceptance.sql`.
+- Documentation: SECURITY_ASSESSMENT, PENETRATION_TEST_REPORT, VULNERABILITY_REMEDIATION, THREAT_MODEL,
+  SECURITY_ARCHITECTURE, TEST_RESULTS, WAZUH_COMPARISON, DEPLOYMENT_GUIDE; raw outputs in `evidence/`.
+
+### Behaviour changes
+- `.env` requires `COLLECT_DB_SUBNET`.
+- Users page shows the Entra object ID instead of "linked".
+- Smoke test uses a unique user per run and checks the independent verification banner.
+
+### Known limitations
+See SECURITY_ASSESSMENT.md §4. Not production-approved.

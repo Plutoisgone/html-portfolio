@@ -1,3 +1,18 @@
+# Mini-SIEM — Phase 0.1 security-hardened release
+
+> **Status:** approved for an isolated lab / pilot with synthetic data. **Not production-approved** —
+> see `SECURITY_ASSESSMENT.md` §5 for the production gate.
+>
+> Start here: `SECURITY_ASSESSMENT.md` (decision) · `DEPLOYMENT_GUIDE.md` (install) ·
+> `VULNERABILITY_REMEDIATION.md` · `PENETRATION_TEST_REPORT.md` · `THREAT_MODEL.md` ·
+> `SECURITY_ARCHITECTURE.md` · `TEST_RESULTS.md` · `WAZUH_COMPARISON.md` · `CHANGELOG.md` ·
+> SBOMs in `sbom/` · raw test/scan output in `evidence/`.
+>
+> The sections below are the original Phase 0 README, kept for reference; where they differ,
+> `DEPLOYMENT_GUIDE.md` wins (e.g. users are identified by Entra **object ID**, not UPN).
+
+---
+
 # Phase 1 lab candidate
 
 See [PHASE1_GUIDE.md](PHASE1_GUIDE.md) for the new optional mTLS collector, event store, console, deployment steps and limitations. The remainder of this README describes the inherited Phase 0.2 foundation. Phase 0.3 auth/admin separation and live acceptance remain incomplete.

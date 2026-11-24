@@ -12,3 +12,6 @@ deploy/postgres/tls/
 
 deploy/collector/tls/
 .pytest_cache/
+deploy/postgres/tls/
+backups/
+*.dump

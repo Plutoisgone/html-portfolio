@@ -1,0 +1,16 @@
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[forged signature-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[wrong issuer-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[other tenant issuer-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[wrong audience-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[expired-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[not yet valid-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[wrong nonce-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[missing nonce-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[missing exp-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[alg none-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[HS256 key confusion-<lambda>]
+FAILED tests/test_oidc_integration.py::test_invalid_id_token_rejected_without_session[garbage token-<lambda>]
+FAILED tests/test_security_regression.py::test_rate_limiter_hard_cap_and_expiry
+FAILED tests/test_security_regression.py::test_rate_limiter_memory_bounded_under_flood
+FAILED tests/test_security_regression.py::test_ipv6_clients_grouped_per_64
+15 failed, 14 passed, 2 warnings in 3.29s

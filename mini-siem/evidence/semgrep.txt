@@ -1,0 +1,91 @@
+                   
+                   
+┌─────────────────┐
+│ 8 Code Findings │
+└─────────────────┘
+                  
+    app/Dockerfile
+     ❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.dockerfile.best-practice.prefer-json-notation                                                  
+          ❰❰ Blocking ❱❱
+          Prefer JSON notation when using CMD or ENTRYPOINT. This allows signals to be passed from the OS.
+                                                                                                          
+           27┆ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+           28┆   CMD python -c "import urllib.request,sys; sys.exit(0 if                              
+               urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"
+                    
+    app/siem/main.py
+   ❯❯❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.python.lang.maintainability.useless-inner-function                                             
+          ❰❰ Blocking ❱❱
+          function `http_error` is defined inside a function but never used
+                                                                           
+           50┆ @app.exception_handler(StarletteHTTPException)
+           51┆ async def http_error(request: Request, exc: StarletteHTTPException):
+           52┆     if exc.status_code in (301, 302, 303, 307) and exc.headers:
+           53┆         return RedirectResponse(exc.headers["Location"], status_code=303)
+           54┆     messages = {400: "Bad request.", 403: "You don't have permission to do that.",
+           55┆                 404: "Page not found.", 409: "That already exists."}
+           56┆     message = exc.detail if exc.status_code in (400, 409) and isinstance(exc.detail, str) \
+           57┆         else messages.get(exc.status_code, "Something went wrong.")
+           58┆     return web.templates.TemplateResponse(
+           59┆         request, "error.html",
+             [hid 3 additional lines, adjust with --max-lines-per-finding] 
+   ❯❯❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.python.lang.maintainability.useless-inner-function                                             
+          ❰❰ Blocking ❱❱
+          function `validation_error` is defined inside a function but never used
+                                                                                 
+           64┆ @app.exception_handler(RequestValidationError)
+           65┆ async def validation_error(request: Request, exc: RequestValidationError):
+           66┆     return web.templates.TemplateResponse(
+           67┆         request, "error.html", {"status": 400, "message": "Bad request.", "user": None},
+           68┆         status_code=400)
+                       
+    app/siem/migrate.py
+   ❯❯❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.python.sqlalchemy.security.sqlalchemy-execute-raw-query                                        
+          ❰❰ Blocking ❱❱
+          Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL
+          Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy      
+          provides TextualSQL to easily used prepared statement with named parameters. For complex SQL        
+          composition, use SQL Expression Language or Schema Definition Language. In most cases, SQLAlchemy   
+          ORM will be a better option.                                                                        
+                                                                                                              
+          363┆ cur.execute(pgsql.SQL(reset).format(r=ident))
+            ⋮┆----------------------------------------
+          365┆ cur.execute(pgsql.SQL(statement).format(r=ident))
+                                      
+    app/siem/templates/breakglass.html
+    ❯❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.python.django.security.django-no-csrf-token                                                    
+          ❰❰ Blocking ❱❱
+          Manually-created forms in django templates should specify a csrf_token to prevent CSRF attacks.
+                                                                                                         
+            7┆ <form method="post" action="/auth/breakglass">
+            8┆   <label for="token">One-time code</label>
+            9┆   <input id="token" name="token" type="password" autocomplete="off" required
+               maxlength="100">                                                            
+           10┆   <button type="submit">Continue</button>
+           11┆ </form>
+                      
+    app/siem/worker.py
+   ❯❯❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.python.lang.best-practice.arbitrary-sleep                                                      
+          ❰❰ Blocking ❱❱
+          time.sleep() call; did you mean to leave this in?
+                                                           
+          292┆ time.sleep(CYCLE_SECONDS)
+                  
+    host/harden.sh
+     ❱ tmp.claude-0.-home-user-html-portfolio.02bb654a-bb2c-5837-b775-023ea9acc6b4.scratchpad.tools.semgrep-
+       rules.generic.secrets.gitleaks.generic-api-key                                                       
+          ❰❰ Blocking ❱❱
+          A gitleaks generic-api-key was detected which attempts to identify hard-coded credentials.  It is   
+          not recommended to store credentials in source-code, as this risks secrets being leaked  and used by
+          either an internal or external malicious adversary. It is recommended to use  environment variables 
+          to securely provide credentials or retrieve credentials from a  secure vault or HSM (Hardware       
+          Security Module). This rule can introduce a lot of false positives,  it is not recommended to be    
+          used in PR comments.                                                                                
+                                                                                                              
+          312┆ DOCKER_KEY_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"

@@ -239,7 +239,9 @@ def run_cycle(settings: Settings, key: bytes, state: dict | None = None) -> int:
 
 
 def worker_settings() -> Settings:
-    return Settings(hostname='', oidc_tenant_id='', oidc_client_id='', oidc_client_secret='',
+    # Empty strings are unused web settings, not credentials.
+    return Settings(  # nosec B106
+        hostname='', oidc_tenant_id='', oidc_client_id='', oidc_client_secret='',
                     initial_super_admins=[], session_secret='', db_dsn=db_dsn('SIEM_DB_WORKER_USER', 'db_worker_password'),
                     s3_endpoint=env('SIEM_S3_ENDPOINT'), s3_bucket=env('SIEM_S3_BUCKET'), s3_region=env('SIEM_S3_REGION'),
                     s3_access_key=secret('s3_access_key', required=False), s3_secret_key=secret('s3_secret_key', required=False),

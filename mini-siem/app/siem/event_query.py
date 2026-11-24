@@ -2,6 +2,11 @@
 from .events import RULES, SOURCE_RE
 
 
+_SELECT = ("SELECT id, received_at, source_id, facility, severity, message, rule_id "
+           "FROM public.security_events WHERE ")
+_ORDER = " ORDER BY received_at DESC,id DESC LIMIT 100"
+
+
 def search_query(source='', term='', rule=''):
     if source and not SOURCE_RE.fullmatch(source):
         raise ValueError('Invalid source filter')
@@ -22,6 +27,6 @@ def search_query(source='', term='', rule=''):
     elif rule:
         where.append('rule_id = %s')
         params.append(rule)
-    return ('SELECT id, received_at, source_id, facility, severity, message, rule_id '
-            'FROM public.security_events WHERE ' + ' AND '.join(where) +
-            ' ORDER BY received_at DESC,id DESC LIMIT 100', tuple(params))
+    # Fixed fragments only; all user values are bound parameters (see test_fuzz_properties).
+    sql = _SELECT + " AND ".join(where) + _ORDER  # nosec B608
+    return sql, tuple(params)

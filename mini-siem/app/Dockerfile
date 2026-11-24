@@ -25,6 +25,6 @@ COPY --chown=root:root siem ./siem
 USER 10001:10001
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"]
 CMD ["uvicorn", "--factory", "siem.main:create_app", "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--no-server-header", "--no-date-header", "--no-access-log", "--workers", "1", "--limit-concurrency", "64", "--timeout-keep-alive", "5"]

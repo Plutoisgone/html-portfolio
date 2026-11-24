@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Security events · Mini-SIEM{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Security events</h1>
+  <p class="muted">Single-tenant lab • Most recent 100 matches in the past 24 hours • Server receipt time</p>
+  <form method="get" action="/events">
+    <label for="source">Authenticated source ID</label>
+    <input id="source" name="source" value="{{ source }}" maxlength="64" placeholder="All sources">
+    <label for="term">Message contains (case sensitive)</label>
+    <input id="term" name="term" value="{{ term }}" maxlength="128" placeholder="Search log text">
+    <label for="rule">Detection rule</label>
+    <select id="rule" name="rule">
+      <option value="" {% if not rule %}selected{% endif %}>All events</option>
+      <option value="any" {% if rule == 'any' %}selected{% endif %}>All rule matches</option>
+      {% for r in rules %}<option value="{{ r }}" {% if rule == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+    </select>
+    <button type="submit">Search</button>
+  </form>
+</section>
+<section class="card">
+  <h2>{{ rows|length }} events returned</h2>
+  <p class="muted">Rule matches are preliminary signals, not verified attacks. Message contents are untrusted.</p>
+  <div class="table-scroll"><table>
+  <thead><tr><th>ID / receipt time</th><th>Source</th><th>Rule / priority</th><th>Message</th></tr></thead>
+  <tbody>{% for r in rows %}
+    <tr><td>{{ r.id }}<br>{{ r.received_at }}</td><td>{{ r.source_id }}</td>
+    <td>{{ r.rule_id or '—' }}<br>{{ r.facility if r.facility is not none else '—' }}/{{ r.severity if r.severity is not none else '—' }}</td>
+    <td><pre class="event-message"><bdi>{{ r.message }}</bdi></pre></td></tr>
+  {% else %}<tr><td colspan="4">No matching events. Confirm the collector and filters.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

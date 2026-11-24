@@ -1,0 +1,25 @@
+# Mini-SIEM host settings. Copy to host.conf and fill in EVERY value.
+# harden.sh refuses to run while any value is still CHANGE_ME.
+
+# Existing sudo user that logs in over SSH with a key (password login is disabled).
+ADMIN_USER="CHANGE_ME"
+
+# Management VLAN / subnet allowed to reach SSH and the dashboard (HTTPS 443).
+# CIDR, space-separated if more than one.
+MGMT_NETS="CHANGE_ME"
+
+# Firewalls allowed to send syslog over TLS (port 6514). IPs or CIDRs, space-separated.
+SYSLOG_SOURCES="CHANGE_ME"
+
+# Networks allowed to send Windows events from Fluent Bit (port 24224, mutual TLS).
+# Reserved for a later release; not opened. IPs or CIDRs, space-separated.
+AGENT_SOURCES="CHANGE_ME"
+
+# Reserved setting; UDP remains disabled in this release.
+SYSLOG_UDP="no"
+
+# SSH port.
+SSH_PORT="22"
+
+# DNS resolvers the server may use (space-separated IPs).
+DNS_SERVERS="CHANGE_ME"

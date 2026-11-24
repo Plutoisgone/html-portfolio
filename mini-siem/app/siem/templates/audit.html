@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Audit log · Mini-SIEM{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Audit log</h1>
+  {% if worker_state == 'ok' %}
+    <p class="ok">Independent verification passed {{ worker.checked_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC
+      ({{ 'full chain' if worker.full_scan else 'since checkpoint' }}; anchored at entry {{ worker.checkpoint_id }}).</p>
+  {% elif worker_state == 'failed' %}
+    <p class="error"><strong>AUDIT INTEGRITY ALERT.</strong> The audit worker's last verification FAILED
+      ({{ worker.detail }}) at {{ worker.checked_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC.
+      {% if last_ok %}Last successful check: {{ last_ok.checked_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC.{% endif %}
+      Treat this log as tampered until investigated; compare with the immutable copy in S3.</p>
+  {% elif worker_state == 'stale' %}
+    <p class="error"><strong>AUDIT VERIFICATION STALE.</strong> No verification for over five minutes
+      (last {{ worker.checked_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC). The worker may be stopped or blocked.</p>
+  {% else %}
+    <p class="error"><strong>NO AUDIT VERIFICATION RECORDED.</strong> The audit worker has not reported yet.</p>
+  {% endif %}
+  {% if chain_ok %}
+    <p class="muted">Database-only check of the newest entries: consistent. (This check cannot detect a rewritten chain; the worker's anchored check above can.)</p>
+  {% else %}
+    <p class="error">Database-only check: hash chain BROKEN at entry {{ bad_id }}.</p>
+  {% endif %}
+  <table>
+    <thead><tr><th>#</th><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Severity</th><th>IP</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr class="sev-{{ r.severity }}">
+        <td>{{ r.id }}</td><td>{{ r.ts.strftime('%Y-%m-%d %H:%M:%S') }}</td><td>{{ r.actor }}</td>
+        <td>{{ r.action }}</td><td>{{ r.target or '' }}</td><td>{{ r.severity }}</td><td>{{ r.ip or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Newest 200 entries.</p>
+</section>
+{% endblock %}

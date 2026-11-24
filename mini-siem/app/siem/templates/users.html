@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Users · Mini-SIEM{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Users</h1>
+  <table>
+    <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Entra object ID</th><th>Last login</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.email }}</td>
+        <td>
+          {% if u.id != user.user_id %}
+          <form method="post" action="/admin/users/{{ u.id }}/role" class="inline">
+            <input type="hidden" name="csrf" value="{{ user.csrf_token }}">
+            <select name="role">{% for r in roles %}<option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+            <button type="submit">Save</button>
+          </form>
+          {% else %}{{ u.role }} (you){% endif %}
+        </td>
+        <td>{{ 'Active' if u.active else 'Disabled' }}</td>
+        <td><code>{{ u.entra_oid }}</code></td>
+        <td>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else '-' }}</td>
+        <td>
+          {% if u.id != user.user_id %}
+          <form method="post" action="/admin/users/{{ u.id }}/active" class="inline">
+            <input type="hidden" name="csrf" value="{{ user.csrf_token }}">
+            <input type="hidden" name="active" value="{{ 'false' if u.active else 'true' }}">
+            <button type="submit">{{ 'Disable' if u.active else 'Enable' }}</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Add user</h2>
+  <p class="muted">Enter their UPN and verified Entra object ID from the configured tenant. The object ID, not the UPN, authorizes sign-in.</p>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf" value="{{ user.csrf_token }}">
+    <label for="email">Email / UPN</label>
+    <input id="email" name="email" type="email" required maxlength="254">
+    <label for="entra_oid">Entra object ID (UUID)</label>
+    <input id="entra_oid" name="entra_oid" required maxlength="36">
+    <label for="role">Role</label>
+    <select id="role" name="role">{% for r in roles %}<option value="{{ r }}" {% if r == 'read_only' %}selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+    <button type="submit">Add user</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Break-glass · Mini-SIEM{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Emergency access</h1>
+  <p>Only for when Microsoft sign-in is unavailable. Paste the one-time code created on the server. Every use raises a critical alert.</p>
+  <form method="post" action="/auth/breakglass">
+    <label for="token">One-time code</label>
+    <input id="token" name="token" type="password" autocomplete="off" required maxlength="100">
+    <button type="submit">Continue</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,69 @@
+{
+	admin off
+	http_port 8080
+	https_port 8443
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+		timeouts {
+			read_body 15s
+			read_header 10s
+			write 60s
+			idle 60s
+		}
+		max_header_size 16KB
+	}
+}
+
+# One definition of the security headers, applied both to proxied responses and
+# to responses Caddy generates itself (413, 502, 504 ...). Phase 0.2 set them only
+# on the normal route, so proxy-generated errors had none and leaked "Server: Caddy".
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+		Cache-Control "no-store"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		-Server
+		-Via
+	}
+}
+
+{$SIEM_HOSTNAME}:8443 {
+	tls {$SIEM_TLS}
+
+	import security_headers
+
+	request_body {
+		max_size 16KB
+	}
+
+	reverse_proxy app:8000 {
+		header_up X-Forwarded-Proto https
+		header_down -Server
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 30s
+		}
+	}
+
+	handle_errors {
+		import security_headers
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+			}
+		}
+	}
+}

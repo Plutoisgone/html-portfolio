@@ -1,0 +1,19 @@
+<clickhouse>
+    <!-- Listen on the internal Docker network only (no ports are published). -->
+    <listen_host>0.0.0.0</listen_host>
+    <!-- Native and HTTP only; no MySQL/PostgreSQL wire protocols. -->
+    <mysql_port remove="1"/>
+    <postgresql_port remove="1"/>
+    <interserver_http_port remove="1"/>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+    <!-- Log every query for auditing. -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 90 DAY</ttl>
+    </query_log>
+    <display_secrets_in_show_and_select>0</display_secrets_in_show_and_select>
+</clickhouse>

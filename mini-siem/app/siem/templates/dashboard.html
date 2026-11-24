@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Security dashboard</h1>
+  <p>Phase 1 lab: secure syslog ingestion, event search and basic detection.</p>
+  {% if user.role == 'super_admin' and user.via == 'sso' %}
+    <a class="button" href="/events">Search security events</a>
+    <a class="button" href="/events?rule=any">Review rule matches</a>
+  {% else %}<p class="muted">Global security events are restricted to SSO super administrators in this single-tenant release.</p>{% endif %}
+  <p class="muted">Collector is opt-in. No active response or vendor API integration is enabled.</p>
+</section>
+{% endblock %}

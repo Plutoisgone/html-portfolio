@@ -1,0 +1,14 @@
+deploy/.env
+deploy/secrets/
+deploy/clickhouse/users.d/users.xml
+deploy/caddy/certs/*
+!deploy/caddy/certs/.gitkeep
+host/host.conf
+__pycache__/
+*.pyc
+.venv/
+
+deploy/postgres/tls/
+
+deploy/collector/tls/
+.pytest_cache/

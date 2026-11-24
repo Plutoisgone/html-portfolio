@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+authlib
+httpx
+itsdangerous
+psycopg[binary]
+psycopg-pool
+boto3
+joserfc

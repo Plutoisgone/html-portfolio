@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Mini-SIEM{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Sign in</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <p>Use your company Microsoft account. Access is limited to registered users.</p>
+  <p><a class="button" href="/auth/login">Sign in with Microsoft</a></p>
+</section>
+{% endblock %}

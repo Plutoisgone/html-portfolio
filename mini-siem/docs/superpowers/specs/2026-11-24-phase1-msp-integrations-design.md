@@ -1,6 +1,6 @@
 # Phase 1 design — multi-customer ingestion of Sophos, Check Point and Huntress
 
-Status: **draft for owner approval** · Date: 2026-11-24 · Builds on: Phase 0.1 (merged to `main`)
+Status: **approved by owner 2026-11-24** (with request: use Wazuh as the reference, §5.6) · Date: 2026-11-24 · Builds on: Phase 0.1 (merged to `main`)
 
 ## 1. Intent
 
@@ -119,6 +119,27 @@ Logs:    filters: time range, device, src/dst IP, action, rule, text  → 100 ro
 Sources: customer | device/connector | product | last seen | accepted / rejected (24 h) | status
 ```
 
+## 5.6 Wazuh as the reference (owner request, 2026-11-24)
+
+Wazuh is the reference design for *how* these sources are handled; Mini-SIEM keeps its own security
+properties (§3 anti-goals). Sources: Wazuh official documentation (rules classification, ms-graph module,
+capabilities) and the public `wazuh/wazuh` repository, retrieved 2026-11-24. Wazuh was not installed here.
+
+| Topic | What Wazuh does | What Mini-SIEM adopts |
+|---|---|---|
+| Parsing | Decoders per vendor turn raw logs into named fields; Wazuh ships Check Point and Sophos decoders | Same model: one parser per vendor log format, named fields + raw line kept. Parsers are written from **vendor documentation**, with Wazuh's decoders used only to cross-check which fields and formats matter (see licence note) |
+| Severity | Rule levels 0–16 (0 ignored; 6–10 low-relevance attacks; 11–15 serious; 16 custom maximum) | Each alert also stores a Wazuh-comparable level 0–16 mapped from the vendor's severity, so analysts used to Wazuh read it the same way and a later Wazuh comparison/replay is like-for-like |
+| Cloud API polling | Pull modules (e.g. `ms-graph`) configured with `interval`, `only_future_events`, `run_on_start`, `curl_max_size` and one `api_auth` block per tenant | Connector settings mirror these: poll interval, "start from now vs. back-fill", run on start, maximum response size, one credential block per customer |
+| Multi-customer | Agent groups and dashboard tenants (OpenSearch security plugin) | Stricter: separation enforced in PostgreSQL (RLS) and ClickHouse (row policies), customer bound to certificate / connector, not to configuration labels |
+| Huntress | No native integration found in Wazuh documentation; community integrations exist | Native connector (§5.3) |
+| Next engine | Wazuh 5.0 release candidates rework the engine and decoders; a public 5.0.0-rc1 issue reports rsyslog input paths dropping or misfiling network-device syslog | Not tracked; revisit when 5.x is stable. Our own replay tests (§7) use the same multi-vendor sample approach |
+| Validation | — | Phase 1 acceptance adds a side-by-side replay: the same synthetic Check Point / Sophos log set through Wazuh 4.14.x and Mini-SIEM on identical 4 vCPU / 8 GB VMs, comparing parsed fields, alerts and resource use (proposed, §8 step 5) |
+
+**Licence note.** Wazuh is GPL v2. Mini-SIEM has no licence file yet. Copying Wazuh decoders, rules
+or test samples into Mini-SIEM would make those parts GPL v2. Therefore nothing is copied: parsers and
+test logs are written from vendor documentation and synthetic data. Choosing Mini-SIEM's own licence is
+an owner decision (open item §10).
+
 ## 6. Sizing assumption (to be corrected by the owner)
 
 Not given in the brief, so assumed: **up to 20 customers, 40 firewalls, ~5 million firewall events/day
@@ -142,7 +163,8 @@ levers are shorter retention, Wasabi archive of older partitions, or a larger di
 2. Check Point via Log Exporter (direct mTLS) + parser.
 3. Sophos Firewall: client-certificate test on the real firewall; direct or relay; parser.
 4. Huntress connector; then Sophos Central connector.
-5. Console pages, source health, load test, documentation, security assessment of Phase 1.
+5. Console pages, source health, load test, side-by-side replay against Wazuh 4.14.x, documentation,
+   security assessment of Phase 1.
 
 ## 9. Left to the builder
 Exact ClickHouse schema and codecs; parser field mappings per vendor log type; batch sizes; polling
@@ -152,6 +174,7 @@ intervals within vendor rate limits; UI details within the sketch.
 - Sophos Firewall client-certificate support unverified (relay fallback, §5.2).
 - Vendor API details unverified (§5.3).
 - Volume assumption (§6) unverified.
+- Mini-SIEM has no licence; owner to choose (affects whether Wazuh GPL material could ever be reused).
 - Real customer data is still not allowed until the Phase 0.1 production gate (SECURITY_ASSESSMENT.md §5)
   and a Phase 1 security assessment are complete; lab uses owner's devices with test or non-sensitive traffic.
 - Single VM: no HA; ingestion stops during maintenance (devices must buffer or data is lost — to be documented per vendor).

@@ -70,8 +70,9 @@ no tenant-controlled input. B remains an option later for very high volume (§10
 ### 5.1 Data placement
 - **PostgreSQL** (control plane): customers, staff-to-customer assignments, sources (devices and API
   connectors), credential *references*, source health counters, audit log. Row-level security (RLS) on
-  every tenant-scoped table, policy keyed on a per-transaction setting that only `SECURITY DEFINER`
-  functions set after checking the staff assignment.
+  every tenant-scoped table. *(Refined in Plan 1: the policy is keyed on the caller's session token,
+  checked against the sessions table by a `SECURITY DEFINER` function, because a plain custom setting
+  could be set by anyone holding the app DB password.)*
 - **ClickHouse** (data plane): `events` and `alerts` tables, `customer_id` as the first column of the sort key,
   partitioned by month, with a TTL for retention (§6). ClickHouse row policies restrict the read user
   to the customer list passed by the app; the app additionally always filters by customer and the

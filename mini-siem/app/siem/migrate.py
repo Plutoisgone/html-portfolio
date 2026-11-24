@@ -299,6 +299,157 @@ MIGRATIONS: list[str] = [
         DELETE FROM public.audit_verification WHERE checked_at<now()-interval '30 days';
     $$;
     """,
+    # 6 (Phase 1): customers (MSP clients), staff assignments and a customer scope
+    # that is derived only from a live SSO session token, never from request input.
+    # Row-level security on the two tables makes the web role see exactly the
+    # customers its current session is scoped to; writes go only through the
+    # session-authenticated SECURITY DEFINER functions, and a deferred trigger
+    # refuses to COMMIT any customer or assignment change without an audit record.
+    #
+    # RLS design: policies are FORCEd, so the table owner is subject to them too.
+    # The owner (which owns every SECURITY DEFINER function, including the scope
+    # function the policies call) gets its own permissive "definer" policy, and the
+    # scope policies apply only TO the web role. The scope function therefore reads
+    # these tables under the definer policy alone and never re-enters the scope
+    # policy (no recursion). The web role's name is supplied by the migration
+    # runner (siem.migrate_app_role) and kept current by grant_roles().
+    """
+    CREATE TABLE customers (
+        id         integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        slug       text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,31}$'),
+        name       text NOT NULL CHECK (length(name) BETWEEN 1 AND 100 AND name !~ '[[:cntrl:]]'),
+        active     boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE staff_customers (
+        user_id     integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        customer_id integer NOT NULL REFERENCES customers(id),
+        PRIMARY KEY (user_id, customer_id)
+    );
+    CREATE INDEX staff_customers_customer_idx ON staff_customers(customer_id);
+
+    -- Customer ids the given session may see. Read-only: it does not refresh
+    -- last_seen_at, and it never raises for an unknown or malformed token.
+    -- Break-glass sessions get no customer scope at all.
+    CREATE FUNCTION session_customer_ids(p_token text, p_idle integer) RETURNS integer[]
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+    DECLARE uid integer; urole text;
+    BEGIN
+        IF p_token IS NULL OR length(p_token) NOT BETWEEN 20 AND 100
+           OR p_idle IS NULL OR p_idle NOT BETWEEN 1 AND 60 THEN
+            RETURN '{}';
+        END IF;
+        SELECT u.id, u.role INTO uid, urole
+          FROM public.sessions s JOIN public.users u ON u.id = s.user_id
+         WHERE s.id_hash = sha256(convert_to(p_token, 'UTF8'))
+           AND s.via = 'sso'
+           AND s.expires_at > clock_timestamp()
+           AND s.last_seen_at > clock_timestamp() - p_idle * interval '1 minute'
+           AND u.active;
+        IF NOT FOUND THEN
+            RETURN '{}';
+        END IF;
+        IF urole = 'super_admin' THEN
+            RETURN coalesce((SELECT array_agg(c.id ORDER BY c.id) FROM public.customers c
+                             WHERE c.active), '{}');
+        END IF;
+        RETURN coalesce((SELECT array_agg(c.id ORDER BY c.id)
+                           FROM public.staff_customers sc
+                           JOIN public.customers c ON c.id = sc.customer_id
+                          WHERE sc.user_id = uid AND c.active), '{}');
+    END $$;
+
+    ALTER TABLE customers ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY;
+    ALTER TABLE staff_customers ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY;
+    CREATE POLICY customers_definer ON customers FOR ALL TO CURRENT_USER
+        USING (true) WITH CHECK (true);
+    CREATE POLICY staff_customers_definer ON staff_customers FOR ALL TO CURRENT_USER
+        USING (true) WITH CHECK (true);
+    DO $mig$
+    DECLARE app text := current_setting('siem.migrate_app_role', true);
+    BEGIN
+        IF app IS NULL OR app = '' OR app = current_user THEN
+            RAISE EXCEPTION 'migration 6 needs the web role name in siem.migrate_app_role';
+        END IF;
+        EXECUTE format($p$CREATE POLICY customers_scope ON public.customers FOR SELECT TO %I
+            USING (id = ANY ((SELECT public.session_customer_ids(current_setting('siem.session', true), 60))::integer[])) $p$, app);
+        EXECUTE format($p$CREATE POLICY staff_customers_scope ON public.staff_customers FOR SELECT TO %I
+            USING (customer_id = ANY ((SELECT public.session_customer_ids(current_setting('siem.session', true), 60))::integer[])) $p$, app);
+    END $mig$;
+
+    CREATE FUNCTION admin_create_customer(p_token text, p_idle integer, p_slug text,
+                                          p_name text) RETURNS integer
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+    DECLARE a public.users; new_id integer;
+    BEGIN
+        a := public.admin_actor(p_token, p_idle);
+        INSERT INTO public.customers (slug, name) VALUES (p_slug, p_name) RETURNING id INTO new_id;
+        RETURN new_id;
+    END $$;
+
+    CREATE FUNCTION admin_set_customer_active(p_token text, p_idle integer, p_customer integer,
+                                              p_active boolean) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+    DECLARE a public.users; c public.customers;
+    BEGIN
+        a := public.admin_actor(p_token, p_idle);
+        IF p_active IS NULL THEN RAISE EXCEPTION 'active flag required' USING ERRCODE = '22004'; END IF;
+        SELECT * INTO c FROM public.customers x WHERE x.id = p_customer FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'no such customer' USING ERRCODE = 'P0002'; END IF;
+        UPDATE public.customers x SET active = p_active WHERE x.id = p_customer;
+        RETURN c.slug;
+    END $$;
+
+    CREATE FUNCTION admin_assign_staff(p_token text, p_idle integer, p_user integer,
+                                       p_customer integer, p_assigned boolean) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+    DECLARE a public.users; c public.customers;
+    BEGIN
+        a := public.admin_actor(p_token, p_idle);
+        IF p_assigned IS NULL THEN RAISE EXCEPTION 'assigned flag required' USING ERRCODE = '22004'; END IF;
+        PERFORM 1 FROM public.users u WHERE u.id = p_user FOR SHARE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'no such user' USING ERRCODE = 'P0002'; END IF;
+        SELECT * INTO c FROM public.customers x WHERE x.id = p_customer FOR SHARE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'no such customer' USING ERRCODE = 'P0002'; END IF;
+        IF p_assigned THEN
+            INSERT INTO public.staff_customers (user_id, customer_id) VALUES (p_user, p_customer)
+            ON CONFLICT DO NOTHING;
+        ELSE
+            DELETE FROM public.staff_customers sc WHERE sc.user_id = p_user AND sc.customer_id = p_customer;
+        END IF;
+        RETURN c.slug;
+    END $$;
+
+    CREATE FUNCTION require_tenant_audit() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+    DECLARE want text; who text;
+    BEGIN
+        IF TG_TABLE_NAME = 'customers' THEN
+            who := NEW.slug;
+            IF TG_OP = 'INSERT' THEN want := 'customer.created';
+            ELSIF OLD.active IS DISTINCT FROM NEW.active THEN
+                want := CASE WHEN NEW.active THEN 'customer.activated' ELSE 'customer.deactivated' END;
+            ELSE RETURN NULL;
+            END IF;
+        ELSIF TG_OP = 'INSERT' THEN
+            want := 'customer.staff_assigned';
+            SELECT c.slug INTO who FROM public.customers c WHERE c.id = NEW.customer_id;
+        ELSE
+            want := 'customer.staff_removed';
+            SELECT c.slug INTO who FROM public.customers c WHERE c.id = OLD.customer_id;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM public.audit_log l WHERE l.txid = pg_current_xact_id()
+                       AND l.action = want AND l.target = who) THEN
+            RAISE EXCEPTION 'customer change on % requires an audit record in the same transaction',
+                TG_TABLE_NAME USING ERRCODE = 'SIA01';
+        END IF;
+        RETURN NULL;
+    END $$;
+    CREATE CONSTRAINT TRIGGER customers_require_audit AFTER INSERT OR UPDATE OF active ON customers
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_tenant_audit();
+    CREATE CONSTRAINT TRIGGER staff_customers_require_audit AFTER INSERT OR DELETE ON staff_customers
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_tenant_audit();
+    """,
 ]
 
 AUDIT_INSERT_COLUMNS = ("id, ts, actor, action, target, severity, ip, user_agent, details, "
@@ -311,6 +462,16 @@ ADMIN_FUNCTIONS = (
     "admin_set_active(text, integer, integer, boolean)",
     "bootstrap_first_admin(uuid, text)",
     "consume_breakglass(bytea)",
+    "admin_create_customer(text, integer, text, text)",
+    "admin_set_customer_active(text, integer, integer, boolean)",
+    "admin_assign_staff(text, integer, integer, integer, boolean)",
+    "session_customer_ids(text, integer)",
+)
+
+# Row-level security policies that apply only to the web role (see migration 6).
+APP_SCOPED_POLICIES = (
+    ("customers_scope", "customers"),
+    ("staff_customers_scope", "staff_customers"),
 )
 
 
@@ -328,6 +489,9 @@ def role_grants(app_role, worker_role, emergency_role, ingest_role) -> dict[str,
             "GRANT SELECT ON audit_head, audit_verification TO {r}",
             *[f"GRANT EXECUTE ON FUNCTION {fn} TO {{r}}" for fn in ADMIN_FUNCTIONS],
             "GRANT SELECT ON security_events TO {r}",
+            # Customer data is read-only for the web role and filtered by RLS to
+            # the customers the current session is scoped to.
+            "GRANT SELECT ON customers, staff_customers TO {r}",
         ],
         worker_role: [
             "GRANT SELECT ON audit_log, audit_head TO {r}",
@@ -363,6 +527,11 @@ def grant_roles(cur, app_role, worker_role, emergency_role, ingest_role):
             cur.execute(pgsql.SQL(reset).format(r=ident))
         for statement in ["GRANT USAGE ON SCHEMA public TO {r}", *statements]:
             cur.execute(pgsql.SQL(statement).format(r=ident))
+    # Keep the customer-scope policies attached to the current web role, so a
+    # renamed role never inherits a stale policy target.
+    for policy, table in APP_SCOPED_POLICIES:
+        cur.execute(pgsql.SQL("ALTER POLICY {p} ON {t} TO {r}").format(
+            p=pgsql.Identifier(policy), t=pgsql.Identifier(table), r=pgsql.Identifier(app_role)))
 
 
 def main() -> int:
@@ -377,9 +546,10 @@ def main() -> int:
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS schema_version (version integer NOT NULL)"
             )
+            cur.execute("SELECT set_config('siem.migrate_app_role', %s, true)", (app_role,))
             cur.execute("SELECT coalesce(max(version), 0) FROM schema_version")
             current = cur.fetchone()[0]
-            if current not in (0, 2, 3, 4, 5):
+            if current not in (0, 2, 3, 4, 5, 6):
                 raise RuntimeError("Unknown schema version; Phase 0 (v1) databases require a fresh install. Preserve old audit evidence offline.")
             for i, sql in enumerate(MIGRATIONS, start=2):
                 if i <= current:

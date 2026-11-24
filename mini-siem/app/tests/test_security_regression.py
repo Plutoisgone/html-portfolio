@@ -119,3 +119,39 @@ def test_all_http_status_security_headers():
 
 def test_csrf_unicode_is_rejected_without_exception():
     assert not csrf_ok('token','不')
+
+
+def test_tenancy_grants_are_read_only_for_app_and_absent_elsewhere():
+    from siem import migrate
+    grants = migrate.role_grants("app", "worker", "emergency", "ingest")
+    tenancy_fns = (
+        "admin_create_customer(text, integer, text, text)",
+        "admin_set_customer_active(text, integer, integer, boolean)",
+        "admin_assign_staff(text, integer, integer, integer, boolean)",
+        "session_customer_ids(text, integer)",
+    )
+    app = grants["app"]
+    assert "GRANT SELECT ON customers, staff_customers TO {r}" in app
+    for fn in tenancy_fns:
+        assert f"GRANT EXECUTE ON FUNCTION {fn} TO {{r}}" in app
+    # Exactly those new lines: nothing else mentions the new tables or functions.
+    tenancy_lines = [s for s in app if "customer" in s or "staff" in s]
+    assert len(tenancy_lines) == 1 + len(tenancy_fns)
+    for line in tenancy_lines:
+        assert not any(w in line for w in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "ALL"))
+    for role in ("worker", "emergency", "ingest"):
+        assert not [s for s in grants[role] if "customer" in s or "staff" in s]
+    assert "require_tenant_audit" not in " ".join(sum(grants.values(), []))
+
+
+def test_migration_6_is_known_and_last():
+    from siem import migrate
+    assert len(migrate.MIGRATIONS) == 5  # versions 2..6
+    m6 = migrate.MIGRATIONS[-1]
+    for needle in ("CREATE TABLE customers", "CREATE TABLE staff_customers",
+                   "FORCE ROW LEVEL SECURITY", "require_tenant_audit", "SIA01",
+                   "via = 'sso'"):
+        assert needle in m6
+    import inspect
+    assert "current not in (0, 2, 3, 4, 5, 6)" in inspect.getsource(migrate.main)
+    assert [p for p, _ in migrate.APP_SCOPED_POLICIES] == ["customers_scope", "staff_customers_scope"]

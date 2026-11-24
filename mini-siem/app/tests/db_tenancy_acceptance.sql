@@ -123,31 +123,53 @@ BEGIN
 END $$;
 SET CONSTRAINTS customers_require_audit DEFERRED;
 
+-- audited_step(call, trigger, target slug, good action, wrong action) runs one privileged call
+-- four times against the named deferred audit trigger:
+--   no audit row -> SIA01; wrong action -> SIA01; right action, wrong target -> SIA01;
+--   right action and target -> passes (and only this run's change is kept).
+-- Each failing run is inside its own subtransaction, so its change is undone.
+-- Note: the trigger accepts any audit row of the current transaction, so each
+-- (action, slug) pair can only be probed the first time it occurs in this test.
+CREATE PROCEDURE pg_temp.audited_step(p_call text, p_trg text, p_target text, p_good text,
+                                      p_bad text, INOUT r text DEFAULT NULL)
+LANGUAGE plpgsql AS $f$
+DECLARE probe record;
+BEGIN
+  FOR probe IN SELECT * FROM (VALUES (1, NULL::text, NULL::text), (2, p_bad, NULL), (3, p_good, 'not-this-slug')) v(n, act, tgt) LOOP
+    BEGIN
+      EXECUTE p_call INTO r;
+      IF probe.act IS NOT NULL THEN
+        INSERT INTO audit_log(id,actor,action,target,severity,prev_hash,hash)
+          SELECT last_id+1,'tenancy-admin@invalid.test',probe.act,coalesce(probe.tgt, p_target),'info',last_hash,repeat('e',64) FROM audit_head;
+      END IF;
+      EXECUTE format('SET CONSTRAINTS %I IMMEDIATE', p_trg);
+      RAISE EXCEPTION 'audit check % for [%] passed without a matching audit row', probe.n, p_call;
+    EXCEPTION WHEN SQLSTATE 'SIA01' THEN NULL;
+    END;
+    EXECUTE format('SET CONSTRAINTS %I DEFERRED', p_trg);
+  END LOOP;
+  EXECUTE p_call INTO r;
+  INSERT INTO audit_log(id,actor,action,target,severity,prev_hash,hash)
+    SELECT last_id+1,'tenancy-admin@invalid.test',p_good,p_target,'info',last_hash,repeat('f',64) FROM audit_head;
+  EXECUTE format('SET CONSTRAINTS %I IMMEDIATE', p_trg);
+  EXECUTE format('SET CONSTRAINTS %I DEFERRED', p_trg);
+END $f$;
+
 -- With a matching audit record (written by the caller, like the web app does), it passes.
-SET LOCAL ROLE siem_app;
-SELECT admin_create_customer(:'admin_tok', 30, 'cust-a', 'Customer A') AS cust_a \gset
-SELECT admin_create_customer(:'admin_tok', 30, 'cust-b', 'Customer B') AS cust_b \gset
-INSERT INTO audit_log(id,actor,action,target,severity,prev_hash,hash)
-  SELECT last_id+1,'tenancy-admin@invalid.test','customer.created','cust-a','info',last_hash,repeat('0',64) FROM audit_head;
-INSERT INTO audit_log(id,actor,action,target,severity,prev_hash,hash)
-  SELECT last_id+1,'tenancy-admin@invalid.test','customer.created','cust-b','info',last_hash,repeat('1',64) FROM audit_head;
-SET CONSTRAINTS customers_require_audit IMMEDIATE;
-SET CONSTRAINTS customers_require_audit DEFERRED;
+CALL pg_temp.audited_step(format('SELECT admin_create_customer(%L, 30, %L, %L)', :'admin_tok', 'cust-a', 'Customer A'),
+  'customers_require_audit', 'cust-a', 'customer.created', 'customer.activated') \gset step_
+SELECT :'step_r' IS NOT NULL AS create_a_audited \gset
+CALL pg_temp.audited_step(format('SELECT admin_create_customer(%L, 30, %L, %L)', :'admin_tok', 'cust-b', 'Customer B'),
+  'customers_require_audit', 'cust-b', 'customer.created', 'customer.staff_assigned') \gset step_
+SELECT :'step_r' IS NOT NULL AS create_b_audited \gset
+SELECT id AS cust_a FROM customers WHERE slug='cust-a' \gset
+SELECT id AS cust_b FROM customers WHERE slug='cust-b' \gset
 
 -- Staff assignment requires its own audit record too.
-SELECT admin_assign_staff(:'admin_tok', 30, :analyst_uid, :cust_a, true) = 'cust-a' AS assign_ok \gset
-DO $$
-BEGIN
-  BEGIN
-    SET CONSTRAINTS staff_customers_require_audit IMMEDIATE;
-    RAISE EXCEPTION 'unaudited staff assignment passed the audit check';
-  EXCEPTION WHEN SQLSTATE 'SIA01' THEN NULL;
-  END;
-END $$;
-INSERT INTO audit_log(id,actor,action,target,severity,prev_hash,hash)
-  SELECT last_id+1,'tenancy-admin@invalid.test','customer.staff_assigned','cust-a','info',last_hash,repeat('2',64) FROM audit_head;
-SET CONSTRAINTS staff_customers_require_audit IMMEDIATE;
-SET CONSTRAINTS staff_customers_require_audit DEFERRED;
+CALL pg_temp.audited_step(format('SELECT admin_assign_staff(%L, 30, %s, %s, true)', :'admin_tok', :analyst_uid, :cust_a),
+  'staff_customers_require_audit', 'cust-a', 'customer.staff_assigned', 'customer.staff_removed') \gset step_
+SELECT :'step_r' = 'cust-a' AS assign_ok \gset
+SET LOCAL ROLE siem_app;
 
 -- Block 3: session-bound scope.
 SELECT session_customer_ids(:'analyst_tok', 30) = ARRAY[:cust_a]::integer[] AS analyst_scope_ok \gset
@@ -189,15 +211,32 @@ UPDATE sessions SET expires_at = now() + interval '1 hour', last_seen_at = now()
  WHERE id_hash = sha256(convert_to(:'analyst_tok','UTF8'));
 SET LOCAL ROLE siem_app;
 
--- Block 4: deactivation, unassignment and user deactivation all remove scope.
-SELECT admin_set_customer_active(:'admin_tok', 30, :cust_a, false) = 'cust-a' AS deact_ok \gset
+-- Block 4: deactivation, unassignment and user deactivation all remove scope; every
+-- one of these changes is refused at COMMIT without its exact audit record.
+RESET ROLE;
+CALL pg_temp.audited_step(format('SELECT admin_set_customer_active(%L, 30, %s, false)', :'admin_tok', :cust_a),
+  'customers_require_audit', 'cust-a', 'customer.deactivated', 'customer.activated') \gset step_
+SELECT :'step_r' = 'cust-a' AS deact_ok \gset
+SET LOCAL ROLE siem_app;
 SELECT session_customer_ids(:'analyst_tok', 30) = '{}'::integer[] AS deact_scope_ok \gset
 SELECT NOT (session_customer_ids(:'admin_tok', 30) @> ARRAY[:cust_a]::integer[]) AS admin_deact_scope_ok \gset
-SELECT admin_set_customer_active(:'admin_tok', 30, :cust_a, true) = 'cust-a' AS react_ok \gset
+RESET ROLE;
+CALL pg_temp.audited_step(format('SELECT admin_set_customer_active(%L, 30, %s, true)', :'admin_tok', :cust_a),
+  'customers_require_audit', 'cust-a', 'customer.activated', 'customer.deactivated') \gset step_
+SELECT :'step_r' = 'cust-a' AS react_ok \gset
+SET LOCAL ROLE siem_app;
 SELECT session_customer_ids(:'analyst_tok', 30) = ARRAY[:cust_a]::integer[] AS react_scope_ok \gset
-SELECT admin_assign_staff(:'admin_tok', 30, :analyst_uid, :cust_a, false) = 'cust-a' AS unassign_ok \gset
+RESET ROLE;
+CALL pg_temp.audited_step(format('SELECT admin_assign_staff(%L, 30, %s, %s, false)', :'admin_tok', :analyst_uid, :cust_a),
+  'staff_customers_require_audit', 'cust-a', 'customer.staff_removed', 'customer.staff_assigned') \gset step_
+SELECT :'step_r' = 'cust-a' AS unassign_ok \gset
+SET LOCAL ROLE siem_app;
 SELECT session_customer_ids(:'analyst_tok', 30) = '{}'::integer[] AS unassign_scope_ok \gset
+RESET ROLE;
+-- (re-assignment: the earlier customer.staff_assigned/cust-a row of this transaction
+-- already satisfies the trigger, so it is not probed again here)
 SELECT admin_assign_staff(:'admin_tok', 30, :analyst_uid, :cust_a, true) = 'cust-a' AS reassign_ok \gset
+SET LOCAL ROLE siem_app;
 SELECT session_customer_ids(:'analyst_tok', 30) = ARRAY[:cust_a]::integer[] AS reassign_scope_ok \gset
 RESET ROLE;
 -- Deactivating the user (revoke trigger also drops sessions) leaves no scope; also
@@ -231,6 +270,14 @@ BEGIN
 END $$;
 RESET ROLE;
 
+\if :create_a_audited
+\else
+  SELECT 1/0;
+\endif
+\if :create_b_audited
+\else
+  SELECT 1/0;
+\endif
 \if :assign_ok
 \else
   SELECT 1/0;

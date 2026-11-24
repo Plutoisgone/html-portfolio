@@ -7,9 +7,10 @@ retrieved 2026-11-24.
 **Method and honesty rules.** Wazuh statements come only from the official documentation pages cited
 below; **Wazuh was not installed or tested here**. Mini-SIEM claims are labelled
 **[V]** experimentally verified in this assessment, **[I]** implemented but not verifiable here, **[P]** proposed.
-This is not a feature comparison: Wazuh is a mature, full XDR/SIEM platform (agents, FIM, vulnerability
-detection, SCA, active response, thousands of rules). Mini-SIEM Phase 0.1 is a hardened *foundation*
-plus a lab-grade syslog collector. The comparison is about **security architecture of the platform itself**.
+Wazuh is a mature, full XDR/SIEM platform (agents, FIM, vulnerability
+detection, SCA, active response, an extensive ruleset). Mini-SIEM Phase 0.1 is a hardened *foundation*
+plus a lab-grade syslog collector. The first table compares the **security architecture of the platform itself**;
+the feature comparison after it shows the functional gap.
 
 Sources (official): quickstart sizing — https://documentation.wazuh.com/current/quickstart.html ·
 server requirements — …/installation-guide/wazuh-server/index.html · OVA 4.14.10 — …/deployment-options/virtual-machine/virtual-machine.html ·
@@ -33,6 +34,86 @@ RBAC — …/user-manual/user-administration/rbac.html · event logging/rotation
 | **Compromised-account resilience** | SSO users get roles via IdP attributes; internal users have passwords. | Stolen web DB password cannot escalate; stolen admin session cannot erase or bypass the audit trail; break-glass revoked on demotion **[V]**. | Mini-SIEM explicitly engineered for this; Wazuh docs reviewed do not make equivalent claims (not tested either way). |
 | **Backup / DR** | Documented backup guidance exists (not reviewed in detail — **not compared**). | `backup.sh`/`restore.sh` with matching checkpoint, live DR test incl. rollback detection **[V]**. | — |
 | **Production readiness** | Mature, widely deployed, extensive rules and integrations (incl. Windows/Linux agents, many firewall decoders). | **Not production-approved** (see SECURITY_ASSESSMENT.md decision). No agents, no vendor parsers, no correlation, no tenant isolation. | Wazuh is production-ready; Mini-SIEM is a hardened foundation. |
+
+## Feature comparison
+
+Added after the architecture comparison, at the owner's request. **Wazuh column:** features as listed in Wazuh's
+official documentation (sources below), retrieved 2026-11-24; Wazuh was **not installed or tested**, so this says
+what Wazuh documents, not how well it works. **Mini-SIEM column:** what is in this release's source code.
+Status labels: **Yes** (in this release), **Lab** (Phase 1 lab collector: opt-in, synthetic data only),
+**Planned** (on the roadmap, not implemented), **No** (not planned yet).
+
+Sources (official): capabilities index — https://documentation.wazuh.com/current/user-manual/capabilities/index.html ·
+use cases — …/getting-started/use-cases/index.html · log data analysis — …/getting-started/use-cases/log-analysis.html ·
+cloud workload protection — …/getting-started/use-cases/cloud-workload-protection.html ·
+regulatory compliance — …/getting-started/use-cases/regulatory-compliance.html ·
+external API integration — …/user-manual/manager/integration-with-external-apis.html
+
+### Data collection
+
+| Feature | Wazuh 4.14.10 | Mini-SIEM Phase 0.1 |
+|---|---|---|
+| Endpoint agent (Windows, Linux, macOS) | Yes — the Wazuh agent | **No** agent; Planned: standard forwarders (WEF/WEC, Fluent Bit, rsyslog) instead of an own agent |
+| Agentless monitoring (SSH to devices) | Yes | No |
+| Syslog from network devices | Yes — syslog on the Wazuh server | **Lab** — TCP/6514 with mandatory mutual TLS and a certificate allowlist; no UDP or plaintext; deliberately low rate limits |
+| journald / log files on hosts | Yes — via the agent | No (Planned via forwarders) |
+| Cloud provider logs (AWS, Azure, Google Cloud) | Yes — through provider APIs | No |
+| SaaS logs (Office 365, GitHub) | Yes | No |
+| Sophos Central, Huntress APIs | Not covered by the pages reviewed (possible through custom integrations) | Planned (pull with per-tenant credentials) |
+| Durable queue, delivery acknowledgement, loss accounting | Not reviewed | **No** — lab collector can lose events |
+
+### Analysis and detection
+
+| Feature | Wazuh 4.14.10 | Mini-SIEM Phase 0.1 |
+|---|---|---|
+| Log parsing (decoders) | Yes — decoders turn logs into structured fields | **Lab** — generic key/value tokens only; no vendor parsers |
+| Detection rules | Yes — rule engine with an extensive default ruleset and custom rules | **Lab** — 3 illustrative rules (authentication failure, firewall deny, malware indicator) |
+| Correlation across events | Yes — rules can build on earlier events | No |
+| Threat intelligence (CDB lists, VirusTotal, YARA) | Yes | No |
+| Malware and rootkit detection | Yes (FIM rules, rootkit behaviour, ClamAV and Windows Defender log collection) | No |
+| Threat hunting | Yes — documented use case | Basic event search only (source, text, rule; 100-result cap) |
+
+### Endpoint security
+
+| Feature | Wazuh 4.14.10 | Mini-SIEM Phase 0.1 |
+|---|---|---|
+| File integrity monitoring (incl. Windows Registry) | Yes | No (the SIEM host itself uses AIDE via `host/harden.sh`) |
+| Vulnerability detection | Yes | No (the SIEM's own images are scanned in CI with Trivy) |
+| Security configuration assessment (CIS-style policies) | Yes — SCA with built-in and custom policies | No (the SIEM host is hardened and checked by its own scripts) |
+| System inventory (packages, ports, processes; osquery) | Yes — Syscollector, osquery | No |
+| System call / command monitoring | Yes — Linux audit integration, command monitoring | No |
+| Container monitoring (Docker, Kubernetes) | Yes | No |
+
+### Response, alerting and compliance
+
+| Feature | Wazuh 4.14.10 | Mini-SIEM Phase 0.1 |
+|---|---|---|
+| Active response (block IP, disable account, custom scripts) | Yes | No (deliberately not planned before tenant isolation) |
+| Alerting to Slack, PagerDuty, Shuffle, custom scripts | Yes — Integrator module | No event alerting. Only a dead-man's-switch heartbeat when audit integrity verification fails |
+| Compliance mapping (PCI DSS, GDPR, HIPAA, NIST 800-53, TSC) | Yes | No |
+| Dashboards and reports | Yes — Wazuh dashboard, custom dashboards | Fixed pages: overview, events, users, audit log |
+
+### Platform and administration
+
+| Feature | Wazuh 4.14.10 | Mini-SIEM Phase 0.1 |
+|---|---|---|
+| Single sign-on | Yes — SAML 2.0 (Entra ID, Okta, Keycloak, …) | **Yes** — Entra ID OIDC only, no local passwords |
+| Local user accounts | Yes | No — one-time break-glass codes from the host CLI instead |
+| Role-based access control | Yes — fine-grained, plus API RBAC | **Yes** — 4 fixed roles, privileged changes enforced in the database |
+| Multi-tenancy (per-customer separation) | Yes — tenants and agent groups | **No** — single tenant; Planned first for MSP use |
+| Tamper-evident administrative audit log | Signed checksums of rotated log files | **Yes** — hash chain, keyed checkpoints, optional Wasabi Object Lock |
+| Event retention / archiving | Yes — indexer storage and archives | **Lab** — events pruned after 24 h, not archived |
+| Scale-out / high availability | Yes — clustered server and indexer | No — single VM by design |
+| API for automation | Yes — Wazuh server API | No |
+
+### What this means
+
+Wazuh documents almost every row above (exceptions are marked); Mini-SIEM covers only identity, access control, audit integrity and a lab-grade
+syslog receiver. Mini-SIEM **cannot replace Wazuh today** for monitoring endpoints, detecting threats or
+meeting compliance needs. Its value is a smaller, more tightly controlled platform core that the roadmap
+below would build on. Mini-SIEM's lead is limited to its own administrative security (see the architecture
+table above). If customers need detection now, deploying Wazuh, possibly alongside Mini-SIEM, is the
+realistic option.
 
 ## Implications for the roadmap (proposed, not implemented)
 

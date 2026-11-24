@@ -1,0 +1,7 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["s3:ListBucketVersions"], "Resource": "arn:aws:s3:::REPLACE-WITH-DEDICATED-BUCKET"},
+    {"Effect": "Allow", "Action": ["s3:PutObject", "s3:PutObjectRetention", "s3:GetObjectVersion", "s3:GetObjectRetention"], "Resource": "arn:aws:s3:::REPLACE-WITH-DEDICATED-BUCKET/audit/*"}
+  ]
+}

@@ -1,0 +1,70 @@
+# Runs on every push and pull request.
+# Supply chain: GitHub-owned actions are pinned to full commit SHAs; scanners run
+# from digest-pinned container images (no third-party Actions with write-capable tokens).
+name: security-checks
+on: [push, pull_request]
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb  # 0.76.2
+  GITLEAKS_IMAGE: zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f  # v8.30.1
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with: { python-version: "3.12" }
+
+      - name: Install pinned dependencies (hash-checked)
+        working-directory: app
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements.txt
+          python -m pip install pytest hypothesis bandit pip-audit semgrep
+
+      - name: Unit, property and in-process integration tests
+        working-directory: app
+        run: python -m pytest -q tests --ignore=tests/smoke_test.py --ignore=tests/live
+
+      - name: Bandit (Python security lint)
+        working-directory: app
+        run: bandit -q -r siem -ll
+
+      - name: Semgrep (SAST)
+        working-directory: app
+        run: semgrep scan --config p/python --config p/security-audit --metrics off --error siem
+
+      - name: pip-audit (known vulnerable dependencies)
+        working-directory: app
+        run: pip-audit -r requirements.txt --require-hashes
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning host/harden.sh deploy/setup.sh deploy/postgres/01-app-role.sh deploy/verify-deployment.sh
+
+      - name: Gitleaks (secret scanning, full history)
+        run: docker run --rm -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect --source /repo --redact --no-banner
+
+      - name: Build images
+        run: |
+          docker build -t mini-siem-app:ci app
+          docker build -t mini-siem-postgres:ci deploy/postgres
+
+      - name: Trivy - fail on fixable HIGH/CRITICAL
+        run: |
+          for img in mini-siem-app:ci mini-siem-postgres:ci; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image \
+              --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$img"
+          done
+
+      - name: Trivy - full report incl. unfixed (informational, reviewed per release)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image \
+            --scanners vuln --severity HIGH,CRITICAL --exit-code 0 mini-siem-app:ci
+
+      - name: Trivy - IaC / config misconfiguration
+        run: docker run --rm -v "$PWD:/src" "$TRIVY_IMAGE" config --severity HIGH,CRITICAL --exit-code 1 /src

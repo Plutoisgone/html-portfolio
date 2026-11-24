@@ -1,0 +1,5 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/auth/breakglass,HTTPError('503 Server Error: Service Unavailable for url: /auth/breakglass'),16,2026-11-24T14:48:13Z,2026-11-24T14:49:16Z
+GET,/login,HTTPError('429 Client Error: Too Many Requests for url: /login'),133886,2026-11-24T14:48:10Z,2026-11-24T14:50:09Z
+POST,/auth/breakglass,HTTPError('429 Client Error: Too Many Requests for url: /auth/breakglass'),44683,2026-11-24T14:48:09Z,2026-11-24T14:50:09Z
+GET,/login,HTTPError('503 Server Error: Service Unavailable for url: /login'),66,2026-11-24T14:48:13Z,2026-11-24T14:49:16Z

@@ -1,0 +1,1 @@
+NOT TESTED: grype could not download its vulnerability database (grype.anchore.io blocked by the session's egress proxy). See TEST_RESULTS.md section 7.

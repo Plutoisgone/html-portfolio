@@ -1,0 +1,9 @@
+# Nmap 7.94SVN scan initiated Tue Nov 24 14:42:43 2026 as: nmap -Pn -sT -p- --min-rate 2000 -T4 -oN <lab>/work/mini-siem/evidence/nmap-bind-ip-allports.txt 192.0.2.2
+Nmap scan report for siem.lab.test (192.0.2.2)
+Host is up (0.000048s latency).
+Not shown: 65533 closed tcp ports (conn-refused)
+PORT     STATE SERVICE
+443/tcp  open  https
+2024/tcp open  xinuexpansion4
+
+# Nmap done at Tue Nov 24 14:42:44 2026 -- 1 IP address (1 host up) scanned in 0.71 seconds

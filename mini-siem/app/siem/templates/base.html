@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Mini-SIEM{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">Mini-SIEM</a>
+    {% if user %}
+    <nav>
+      <a href="/">Dashboard</a>
+      {% if user.role == 'super_admin' %}{% if user.via == 'sso' %}<a href="/events">Events</a>{% endif %}<a href="/admin/users">Users</a><a href="/admin/audit">Audit log</a>{% endif %}
+    </nav>
+    <div class="who">
+      <span>{{ user.email }} &middot; {{ user.role }}{% if user.via == 'breakglass' %} &middot; <strong class="crit">BREAK-GLASS</strong>{% endif %}</span>
+      <form method="post" action="/auth/logout" class="inline">
+        <input type="hidden" name="csrf" value="{{ user.csrf_token }}">
+        <button type="submit">Sign out</button>
+      </form>
+    </div>
+    {% endif %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

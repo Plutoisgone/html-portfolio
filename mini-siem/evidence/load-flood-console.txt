@@ -1,0 +1,32 @@
+[2026-11-24 14:48:09,644] vm/INFO/locust.main: Starting Locust 2.47.0
+[2026-11-24 14:48:09,645] vm/INFO/locust.main: Run time limit set to 120 seconds
+[2026-11-24 14:48:09,645] vm/INFO/locust.runners: Ramping to 200 users at a rate of 50.00 per second
+[2026-11-24 14:48:12,678] vm/INFO/locust.runners: All users spawned: {"Flood": 200} (200 total users)
+[2026-11-24 14:48:29,688] vm/WARNING/root: CPU usage above 90%! This may constrain your throughput and may even give inconsistent response time measurements! See https://docs.locust.io/en/stable/running-distributed.html for how to distribute the load over multiple CPU cores or machines
+[2026-11-24 14:50:09,670] vm/INFO/locust.main: --run-time limit reached, shutting down
+[2026-11-24 14:50:09,843] vm/WARNING/locust.runners: CPU usage was too high at some point during the test! See https://docs.locust.io/en/stable/running-distributed.html for how to distribute the load over multiple CPU cores or machines
+[2026-11-24 14:50:09,843] vm/INFO/locust.main: Shutting down (exit code 1)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /auth/breakglass                                                               44897 44877(99.96%) |     86       2     332     86 |  373.55      373.39
+GET      /login                                                                        135357 134477(99.35%) |     86       1     333     86 | 1126.20     1118.88
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                    180254 179354(99.50%) |     86       1     333     86 | 1499.75     1492.26
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+POST     /auth/breakglass                                                                       86     92     97    100    110    120    140    150    190    270    330  44897
+GET      /login                                                                                 86     92     97    100    110    120    140    150    180    280    330 135357
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                             86     92     97    100    110    120    140    150    180    280    330 180254
+
+Error report
+# occurrences      Error                                                                                               
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+44861              POST /auth/breakglass: HTTPError('429 Client Error: Too Many Requests for url: /auth/breakglass')   
+134411             GET /login: HTTPError('429 Client Error: Too Many Requests for url: /login')                        
+66                 GET /login: HTTPError('503 Server Error: Service Unavailable for url: /login')                      
+16                 POST /auth/breakglass: HTTPError('503 Server Error: Service Unavailable for url: /auth/breakglass') 
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+

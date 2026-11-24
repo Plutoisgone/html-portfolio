@@ -1,0 +1,235 @@
+# Mini-SIEM - Phase 0.1 hardened release (with the opt-in Phase 1 lab collector).
+# Start:  sudo docker compose up -d --build
+# All third-party images are pinned by digest; refresh them deliberately (DEPLOYMENT_GUIDE.md).
+name: mini-siem
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  group_add: ["10050"]          # may read the secrets mounted into this container
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+x-app-env: &app-env
+  SIEM_HOSTNAME: ${SIEM_HOSTNAME}
+  SIEM_OIDC_TENANT_ID: ${SIEM_OIDC_TENANT_ID}
+  SIEM_OIDC_CLIENT_ID: ${SIEM_OIDC_CLIENT_ID}
+  SIEM_INITIAL_SUPER_ADMIN_OIDS: ${SIEM_INITIAL_SUPER_ADMIN_OIDS}
+  SIEM_REQUIRE_MFA_CLAIM: ${SIEM_REQUIRE_MFA_CLAIM:-false}
+  SIEM_SESSION_IDLE_MINUTES: ${SIEM_SESSION_IDLE_MINUTES:-30}
+  SIEM_SESSION_ABSOLUTE_HOURS: ${SIEM_SESSION_ABSOLUTE_HOURS:-10}
+  SIEM_DB_OWNER_USER: ${SIEM_DB_OWNER_USER}
+  SIEM_DB_APP_USER: ${SIEM_DB_APP_USER}
+  SIEM_DB_WORKER_USER: ${SIEM_DB_WORKER_USER}
+  SIEM_DB_EMERGENCY_USER: ${SIEM_DB_EMERGENCY_USER}
+  SIEM_DB_INGEST_USER: siem_ingest
+
+services:
+  caddy:
+    <<: *hardening
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    user: "10002:10002"
+    ports:
+      - "${SIEM_BIND_IP:?Set management interface IPv4}:443:8443"                 # the ONLY published web port; nftables limits it to the management VLAN
+    environment:
+      SIEM_HOSTNAME: ${SIEM_HOSTNAME}
+      SIEM_TLS: ${SIEM_TLS:-internal}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/certs:/certs:ro
+      - ${DATA_DIR}/caddy/data:/data
+      - ${DATA_DIR}/caddy/config:/config
+    tmpfs: ["/tmp:size=16m"]
+    networks:
+      edge: { ipv4_address: "${CADDY_IP}" }
+    depends_on:
+      app: { condition: service_healthy }
+    deploy:
+      resources: { limits: { cpus: "1", memory: 256M, pids: 256 } }
+
+  app:
+    <<: *hardening
+    build: ../app
+    image: mini-siem-app:local
+    environment:
+      <<: *app-env
+      FORWARDED_ALLOW_IPS: ${CADDY_IP}   # trust X-Forwarded-For only from Caddy
+    secrets: [db_app_password, session_secret, oidc_client_secret]
+    volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
+    tmpfs: ["/tmp:size=32m"]
+    networks: [edge, backend, egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources: { limits: { cpus: "2", memory: 512M, pids: 256 } }
+
+  worker:
+    <<: *hardening
+    image: mini-siem-app:local
+    command: ["python", "-m", "siem.worker"]
+    environment:
+      SIEM_DB_WORKER_USER: ${SIEM_DB_WORKER_USER}
+      SIEM_S3_ENDPOINT: ${SIEM_S3_ENDPOINT:-}
+      SIEM_S3_REGION: ${SIEM_S3_REGION:-}
+      SIEM_S3_BUCKET: ${SIEM_S3_BUCKET:-}
+      SIEM_AUDIT_RETENTION_DAYS: ${SIEM_AUDIT_RETENTION_DAYS:-365}
+      SIEM_HEARTBEAT_URL: ${SIEM_HEARTBEAT_URL:-}
+    secrets: [db_worker_password, audit_checkpoint_key, s3_access_key, s3_secret_key]
+    volumes:
+      - ./postgres/tls/ca.crt:/db-ca/ca.crt:ro
+      - ${DATA_DIR}/audit-state:/audit-state
+    tmpfs: ["/tmp:size=32m"]
+    networks: [backend, egress]
+    healthcheck: { disable: true }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources: { limits: { cpus: "1", memory: 384M, pids: 128 } }
+
+  migrate:
+    <<: *hardening
+    image: mini-siem-app:local
+    build: ../app
+    command: ["python", "-m", "siem.migrate"]
+    restart: "no"
+    environment: *app-env
+    secrets: [db_owner_password]
+    volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
+    networks: [backend]
+    healthcheck: { disable: true }
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources: { limits: { cpus: "1", memory: 256M, pids: 64 } }
+
+  emergency:
+    <<: *hardening
+    profiles: [tools]
+    image: mini-siem-app:local
+    entrypoint: ["python", "-m", "siem.cli"]
+    restart: "no"
+    environment: *app-env
+    secrets: [db_emergency_password]
+    volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
+    tmpfs: ["/tmp:size=32m"]
+    networks: [backend]
+    healthcheck: { disable: true }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources: { limits: { cpus: "0.5", memory: 128M, pids: 32 } }
+
+  collector:
+    profiles: [ingest]
+    <<: *hardening
+    image: mini-siem-app:local
+    command: ["python", "-m", "siem.collector"]
+    environment:
+      SIEM_DB_INGEST_USER: siem_ingest
+    secrets: [db_ingest_password]
+    volumes:
+      - ./postgres/tls/ca.crt:/db-ca/ca.crt:ro
+      - ./collector/tls:/collector-tls:ro
+    ports:
+      - "${SIEM_BIND_IP}:6514:6514/tcp"
+    networks: [collect_edge, collect_db]
+    tmpfs: ["/tmp:size=16m"]
+    healthcheck: { disable: true }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources: { limits: { cpus: "1", memory: 256M, pids: 64 } }
+
+  postgres:
+    <<: *hardening
+    build: ./postgres
+    image: mini-siem-postgres:local
+    user: "70:70"
+    environment:
+      POSTGRES_DB: siem
+      POSTGRES_USER: siem_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_bootstrap_password
+      SIEM_DB_OWNER_USER: ${SIEM_DB_OWNER_USER}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+      SIEM_DB_APP_USER: ${SIEM_DB_APP_USER}
+      SIEM_DB_WORKER_USER: ${SIEM_DB_WORKER_USER}
+      SIEM_DB_EMERGENCY_USER: ${SIEM_DB_EMERGENCY_USER}
+      SIEM_DB_INGEST_USER: siem_ingest
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/db-tls/server.crt", "-c", "ssl_key_file=/db-tls/server.key", "-c", "hba_file=/db-tls/pg_hba.conf"]
+    secrets: [db_bootstrap_password, db_owner_password, db_app_password, db_worker_password, db_emergency_password, db_ingest_password]
+    volumes:
+      - ${DATA_DIR}/postgres:/var/lib/postgresql/data
+      - ./postgres/tls/server.crt:/db-tls/server.crt:ro
+      - ./postgres/tls/server.key:/db-tls/server.key:ro
+      - ./postgres/pg_hba.conf:/db-tls/pg_hba.conf:ro
+      - ./postgres/01-app-role.sh:/docker-entrypoint-initdb.d/01-app-role.sh:ro
+    tmpfs: ["/var/run/postgresql:size=8m", "/tmp:size=64m"]
+    shm_size: 128m
+    networks: [backend, collect_db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d siem"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources: { limits: { cpus: "2", memory: 1G, pids: 512 } }
+
+  clickhouse:
+    profiles: [future]
+    <<: *hardening
+    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77   # future profile, disabled
+    user: "101:101"
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    volumes:
+      - ${DATA_DIR}/clickhouse:/var/lib/clickhouse
+      - ./clickhouse/config.d/hardening.xml:/etc/clickhouse-server/config.d/hardening.xml:ro
+      - ./clickhouse/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+    tmpfs: ["/tmp:size=256m", "/var/log/clickhouse-server:size=64m"]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    networks: [future_data]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources: { limits: { cpus: "${CLICKHOUSE_CPUS:-2}", memory: "${CLICKHOUSE_MEMORY:-4G}", pids: 2048 } }
+
+networks:
+  edge:            # Caddy <-> app. Not internal, because Caddy publishes 443.
+    ipam:
+      # Dynamic addresses come from EDGE_DYNAMIC_RANGE so they never take CADDY_IP.
+      config: [{ subnet: "${EDGE_SUBNET}", ip_range: "${EDGE_DYNAMIC_RANGE}" }]
+  backend:         # Databases. No route to the internet at all.
+    internal: true
+    ipam:
+      config: [{ subnet: "${BACKEND_SUBNET}" }]
+  collect_edge:
+    driver_opts:
+      com.docker.network.bridge.name: br-siem-collect
+  collect_db:      # collector <-> PostgreSQL only; pg_hba admits only the ingest role from here
+    internal: true
+    ipam:
+      config: [{ subnet: "${COLLECT_DB_SUBNET}" }]
+  future_data:
+    internal: true
+  egress:          # Outbound HTTPS for Entra ID and S3 only (nftables enforces ports).
+    driver: bridge
+
+secrets:
+  db_bootstrap_password: { file: ./secrets/db_bootstrap_password }
+  db_ingest_password: { file: ./secrets/db_ingest_password }
+  db_owner_password:  { file: ./secrets/db_owner_password }
+  db_app_password:    { file: ./secrets/db_app_password }
+  db_worker_password: { file: ./secrets/db_worker_password }
+  db_emergency_password: { file: ./secrets/db_emergency_password }
+  audit_checkpoint_key: { file: ./secrets/audit_checkpoint_key }
+  session_secret:     { file: ./secrets/session_secret }
+  oidc_client_secret: { file: ./secrets/oidc_client_secret }
+  s3_access_key:      { file: ./secrets/s3_access_key }
+  s3_secret_key:      { file: ./secrets/s3_secret_key }

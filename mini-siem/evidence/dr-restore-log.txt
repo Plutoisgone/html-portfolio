@@ -1,0 +1,45 @@
+[1;34m==> Creating secrets[0m
+[1;34m==> Writing ClickHouse users (password hashes only)[0m
+[1;34m==> Preparing PostgreSQL TLS certificates[0m
+[1;34m==> Writing PostgreSQL client authentication rules (pg_hba.conf)[0m
+[1;34m==> Creating data folders in <lab>/finaldata[0m
+[1;34m==> Setup complete.[0m
+ Network mini-siem_backend Creating 
+ Network mini-siem_collect_db Creating 
+ Network mini-siem_backend Created 
+ Network mini-siem_collect_db Created 
+ Container mini-siem-postgres-1 Creating 
+ Container mini-siem-postgres-1 Created 
+ Container mini-siem-postgres-1 Starting 
+ Container mini-siem-postgres-1 Started 
+ Container mini-siem-postgres-1 Running 
+ Network mini-siem_edge Creating 
+ Container mini-siem-migrate-1 Creating 
+ Network mini-siem_egress Creating 
+ Network mini-siem_edge Created 
+ Container mini-siem-migrate-1 Created 
+ Network mini-siem_egress Created 
+ Container mini-siem-worker-1 Creating 
+ Container mini-siem-app-1 Creating 
+ Container mini-siem-worker-1 Created 
+ Container mini-siem-app-1 Created 
+ Container mini-siem-caddy-1 Creating 
+ Container mini-siem-caddy-1 Created 
+ Container mini-siem-postgres-1 Waiting 
+ Container mini-siem-postgres-1 Healthy 
+ Container mini-siem-migrate-1 Starting 
+ Container mini-siem-migrate-1 Started 
+ Container mini-siem-migrate-1 Waiting 
+ Container mini-siem-migrate-1 Exited 
+ Container mini-siem-worker-1 Starting 
+ Container mini-siem-app-1 Starting 
+ Container mini-siem-worker-1 Started 
+ Container mini-siem-app-1 Started 
+ Container mini-siem-app-1 Waiting 
+ Container mini-siem-app-1 Healthy 
+ Container mini-siem-caddy-1 Starting 
+ Container mini-siem-caddy-1 Started 
+ Container mini-siem-worker-run-05fc6aea890a Creating 
+ Container mini-siem-worker-run-05fc6aea890a Created 
+Audit chain OK; anchored checkpoint at id 547
+Restore complete. Review the audit page and run ./verify-deployment.sh.

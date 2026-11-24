@@ -1,0 +1,27 @@
+PASS login page loads
+PASS header content-security-policy
+PASS header strict-transport-security
+PASS header x-frame-options
+PASS header x-content-type-options
+PASS header referrer-policy
+PASS no server banner leak
+PASS unauthenticated / -> /login
+PASS unauthenticated admin -> /login
+PASS /docs disabled
+PASS /openapi.json disabled
+PASS /redoc disabled
+PASS bad break-glass code rejected
+PASS break-glass login
+PASS session cookie flags
+PASS break-glass code is single-use
+PASS admin users page with session
+PASS add user WITHOUT csrf blocked
+PASS add user with csrf
+PASS invalid email rejected
+PASS invalid role rejected
+PASS audit page + independent verification passed
+PASS audit shows break-glass login
+PASS logout
+PASS old session invalid after logout
+
+0 failure(s)

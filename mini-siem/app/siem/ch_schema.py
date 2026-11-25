@@ -8,6 +8,13 @@ fence behind the app's own customer filter: `siem_reader` sees only rows whose
 customer_id is listed in the per-query setting SQL_siem_customer_ids, and nothing
 at all when the setting is missing.
 
+Reading siem.alerts: ReplacingMergeTree removes duplicate vendor alerts
+(same customer_id, product, alert_id) only when parts are merged, at an unknown
+later time. Every read of siem.alerts must therefore use FINAL (or argMax per
+key) or it can return the same alert twice. The table is partitioned by
+alert_time, so a re-delivery of an alert in a later month lands in the same
+partition as the original and is still deduplicated.
+
 Plain HTTPS through httpx (already a dependency) is enough for a handful of DDL
 statements; the driver for the query layer comes with Task 3.
 
@@ -50,7 +57,10 @@ PARTITION BY toYYYYMM(received_at)
 ORDER BY (customer_id, received_at)
 TTL toDateTime(received_at) + INTERVAL {days} DAY"""
 
-# ReplacingMergeTree: the same vendor alert ID delivered twice collapses to one row.
+# ReplacingMergeTree: the same vendor alert ID delivered twice collapses to one row
+# (at merge time; read with FINAL). Partitioned by alert_time, not arrival time, so
+# deduplication is never split across months.
+ALERTS_PARTITION_KEY = "toYYYYMM(alert_time)"
 _ALERTS = """CREATE TABLE IF NOT EXISTS siem.alerts (
     customer_id UInt32,
     alert_id String,
@@ -64,7 +74,7 @@ _ALERTS = """CREATE TABLE IF NOT EXISTS siem.alerts (
     raw String CODEC(ZSTD(3))
 )
 ENGINE = ReplacingMergeTree
-PARTITION BY toYYYYMM(received_at)
+PARTITION BY toYYYYMM(alert_time)
 ORDER BY (customer_id, product, alert_id)
 TTL toDateTime(received_at) + INTERVAL {days} DAY"""
 
@@ -117,8 +127,27 @@ class Admin:
         self._client.close()
 
 
+def _replace_old_alerts_layout(admin) -> None:
+    """Early lab builds partitioned siem.alerts by received_at. The partition key cannot
+    be ALTERed, so an EMPTY old table is dropped and recreated; a non-empty one stops
+    the migration rather than lose data (copy it out first)."""
+    key = admin.run("SELECT partition_key FROM system.tables WHERE database='siem' AND name='alerts' "
+                    "FORMAT TSVRaw").strip()
+    if not key or key == ALERTS_PARTITION_KEY:
+        return
+    rows = int(admin.run("SELECT count() FROM siem.alerts FORMAT TSVRaw").strip() or 0)
+    if rows:
+        raise RuntimeError(f"siem.alerts is partitioned by {key!r} and holds {rows} rows; "
+                           f"migrate them manually to PARTITION BY {ALERTS_PARTITION_KEY}")
+    print(f"Recreating empty siem.alerts (partition key {key} -> {ALERTS_PARTITION_KEY})")
+    admin.run("DROP TABLE siem.alerts SYNC")
+
+
 def apply(admin, days: int) -> None:
-    for sql in statements(days):
+    create_db, *rest = statements(days)
+    admin.run(create_db)
+    _replace_old_alerts_layout(admin)
+    for sql in rest:
         admin.run(sql)
     # CREATE ... IF NOT EXISTS keeps an old TTL; bring retention in line with .env.
     for table in TABLES:

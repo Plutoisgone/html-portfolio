@@ -90,6 +90,18 @@ for svc in migrate ch_migrate; do
   [[ "$code" == 0 ]] && pass "$svc" "completed successfully" || fail "$svc" "exit code $code"
 done
 
+# Internal TLS server certificates (setup CA): FAIL when they expire within 30 days.
+# Renew: delete the server.* files, re-run setup.sh, restart the service (DEPLOYMENT_GUIDE.md).
+for cert in postgres/tls/server.crt clickhouse/tls/server.crt; do
+  if [[ ! -r "$cert" ]]; then fail "tls" "$cert missing or unreadable"; continue; fi
+  end=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)
+  if openssl x509 -in "$cert" -noout -checkend $((30 * 86400)) >/dev/null 2>&1; then
+    pass "tls" "$cert valid for 30+ days (until $end)"
+  else
+    fail "tls" "$cert expires within 30 days or has expired ($end); renew it"
+  fi
+done
+
 for net in backend collect_db; do
   internal=$(docker network inspect -f '{{.Internal}}' "${PROJECT}_${net}" 2>/dev/null)
   [[ "$internal" == true ]] && pass "network" "${net} is internal (no route out)" || fail "network" "${net} internal=${internal:-missing}"

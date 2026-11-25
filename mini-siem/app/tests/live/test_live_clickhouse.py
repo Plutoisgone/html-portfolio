@@ -119,6 +119,9 @@ def test_tables_are_customer_keyed(lab):
                                    "ORDER BY name FORMAT TSV"))
     assert out.splitlines() == ["alerts\tcustomer_id, product, alert_id\tReplacingMergeTree",
                                 "events\tcustomer_id, received_at\tMergeTree"]
+    keys = _ok(lab.ch("siem_admin", "SELECT name, partition_key FROM system.tables WHERE database='siem' "
+                                    "ORDER BY name FORMAT TSV"))
+    assert keys.splitlines() == ["alerts\ttoYYYYMM(alert_time)", "events\ttoYYYYMM(received_at)"]
     ttl = _ok(lab.ch("siem_admin", "SELECT create_table_query FROM system.tables WHERE database='siem' "
                                    "AND name='events' FORMAT TSVRaw"))
     assert f"toIntervalDay({lab.env.get('SIEM_EVENT_RETENTION_DAYS', '90')})" in ttl

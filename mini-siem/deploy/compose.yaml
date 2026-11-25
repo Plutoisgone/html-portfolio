@@ -75,7 +75,8 @@ services:
     networks: [edge, backend, egress]
     depends_on:
       migrate: { condition: service_completed_successfully }
-      ch_migrate: { condition: service_completed_successfully }
+      # Deliberately NO dependency on clickhouse/ch_migrate: a ClickHouse problem must
+      # not keep the web UI (admin, audit, PostgreSQL event pages) from starting.
     deploy:
       resources: { limits: { cpus: "2", memory: 512M, pids: 256 } }
 

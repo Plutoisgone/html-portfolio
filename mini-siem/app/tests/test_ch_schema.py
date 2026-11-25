@@ -31,9 +31,12 @@ def test_every_table_starts_order_by_with_customer_id():
         assert ddl.startswith(f"CREATE TABLE IF NOT EXISTS siem.{name} "), name
         assert re.search(r"\(\s*customer_id UInt32,", ddl), name
         assert _order_by(ddl)[0] == "customer_id", name
-        assert "PARTITION BY toYYYYMM(received_at)" in ddl, name
         assert "TTL toDateTime(received_at) + INTERVAL 90 DAY" in ddl, name
     assert "ENGINE = MergeTree" in tables["events"]
+    assert "PARTITION BY toYYYYMM(received_at)" in tables["events"]
+    # Dedup by vendor ID must not be split across months by arrival time.
+    assert "PARTITION BY toYYYYMM(alert_time)" in tables["alerts"]
+    assert ch_schema.ALERTS_PARTITION_KEY == "toYYYYMM(alert_time)"
     assert _order_by(tables["events"]) == ["customer_id", "received_at"]
     assert "ENGINE = ReplacingMergeTree" in tables["alerts"]
     assert _order_by(tables["alerts"]) == ["customer_id", "product", "alert_id"]
@@ -60,11 +63,15 @@ def test_retention_bounds(monkeypatch):
 
 
 class _FakeAdmin:
-    def __init__(self, stored_days):
-        self.sql, self.stored = [], stored_days
+    def __init__(self, stored_days, alerts_key="toYYYYMM(alert_time)", alerts_rows=0):
+        self.sql, self.stored, self.key, self.rows = [], stored_days, alerts_key, alerts_rows
 
     def run(self, sql):
         self.sql.append(sql)
+        if sql.startswith("SELECT partition_key"):
+            return self.key
+        if sql.startswith("SELECT count() FROM siem.alerts"):
+            return str(self.rows)
         if sql.startswith("SELECT create_table_query"):
             return f"CREATE TABLE siem.x (...) TTL toDateTime(received_at) + toIntervalDay({self.stored}) SETTINGS x"
         return ""
@@ -74,7 +81,8 @@ def test_apply_changes_ttl_only_when_retention_changed():
     same = _FakeAdmin(90)
     ch_schema.apply(same, 90)
     assert not [s for s in same.sql if "MODIFY TTL" in s]
-    assert same.sql[:4] == ch_schema.statements(90)
+    assert [x for x in same.sql if not x.startswith("SELECT")][:4] == ch_schema.statements(90)
+    assert not [x for x in same.sql if x.startswith("DROP")]
     changed = _FakeAdmin(90)
     ch_schema.apply(changed, 30)
     assert [s for s in changed.sql if "MODIFY TTL" in s] == [
@@ -127,3 +135,19 @@ def test_clickhouse_server_cert_signed_by_setup_ca(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     st = (tls / "server.key").stat()
     assert st.st_gid == 101 and st.st_mode & 0o777 == 0o640
+
+
+def test_old_alerts_partition_key_recreated_only_when_empty():
+    for missing in ("",):                                   # fresh install: nothing to drop
+        fresh = _FakeAdmin(90, alerts_key=missing)
+        ch_schema.apply(fresh, 90)
+        assert not [x for x in fresh.sql if x.startswith("DROP")]
+    old = _FakeAdmin(90, alerts_key="toYYYYMM(received_at)")
+    ch_schema.apply(old, 90)
+    drop = old.sql.index("DROP TABLE siem.alerts SYNC")
+    create = next(i for i, x in enumerate(old.sql) if x.startswith("CREATE TABLE IF NOT EXISTS siem.alerts"))
+    assert drop < create
+    full = _FakeAdmin(90, alerts_key="toYYYYMM(received_at)", alerts_rows=5)
+    with pytest.raises(RuntimeError, match="holds 5 rows"):
+        ch_schema.apply(full, 90)
+    assert not [x for x in full.sql if x.startswith("DROP")]

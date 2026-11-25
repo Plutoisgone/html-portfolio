@@ -137,6 +137,11 @@ encrypted and off-host (e.g. Veeam immutable repository). Test a restore on a sc
 * `audit_checkpoint_key`: rotation requires re-signing the current checkpoint with the new key while the
   worker is stopped, after a successful `--verify-once`; procedure is manual (documented risk).
 * DB TLS: server cert valid 365 days — delete `postgres/tls/server.*`, re-run `setup.sh` (CA kept), restart postgres.
+* ClickHouse TLS: server cert (SAN `clickhouse`, same setup CA) valid 365 days — delete
+  `clickhouse/tls/server.*`, re-run `sudo ./setup.sh` (CA kept), then
+  `docker compose up -d --force-recreate clickhouse`. Clients keep trusting it (same CA).
+  `verify-deployment.sh` FAILs when either server certificate expires within 30 days; an expired
+  ClickHouse certificate also fails its healthcheck, but the web app keeps running (no dependency).
 
 ## 10. Phase 1 lab collector (opt-in)
 

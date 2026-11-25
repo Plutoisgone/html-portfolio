@@ -1,6 +1,6 @@
 """OIDC callback validation with the REAL Authlib/joserfc code path.
 
-Integration level: real create_app() wiring, real SessionMiddleware state/nonce
+Integration level: real login-service create_app() wiring (siem.auth_main), real SessionMiddleware state/nonce
 cookie, real RS256 signatures against a JWKS, real claim validation. The only
 stand-ins are (a) the token-endpoint HTTP call, replaced by a function that
 returns the ID token under test, and (b) finish_sso, which would need a
@@ -17,7 +17,7 @@ from joserfc.jwk import OctKey, RSAKey
 from starlette.responses import RedirectResponse
 from starlette.testclient import TestClient
 
-from siem import auth, config, main
+from siem import auth, auth_main, config
 
 TENANT = "11111111-1111-4111-8111-111111111111"
 CLIENT = "22222222-2222-4222-8222-222222222222"
@@ -35,7 +35,7 @@ def settings():
 
 @pytest.fixture
 def flow(monkeypatch):
-    monkeypatch.setattr(main, "load_settings", settings)
+    monkeypatch.setattr(auth_main, "load_auth_settings", settings)
     finished = {}
 
     def fake_finish(request, s, claims, ip, ua):
@@ -45,7 +45,7 @@ def flow(monkeypatch):
     monkeypatch.setattr(auth, "finish_sso", fake_finish)
     audited = []
     monkeypatch.setattr(auth.audit, "write", lambda *a, **kw: audited.append(a[1]))
-    app = main.create_app()
+    app = auth_main.create_app()
     auth.oauth.entra.server_metadata.update({
         "issuer": ISSUER, "authorization_endpoint": f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/authorize",
         "token_endpoint": f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token",

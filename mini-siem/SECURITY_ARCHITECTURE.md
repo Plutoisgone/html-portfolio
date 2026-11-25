@@ -8,7 +8,8 @@ this environment · **[P]** proposed for a later phase.
 | Service | Image (pinned) | User | Networks | Secrets mounted | Limits |
 |---|---|---|---|---|---|
 | caddy | `caddy:2.11.9-alpine@sha256:003a97…` | 10002 | edge (publishes `SIEM_BIND_IP:443` only) | none | 1 CPU, 256 MiB, 256 pids |
-| app | `mini-siem-app:local` (python 3.12 slim trixie `@sha256:37fc60…`) | 10001 | edge, backend, egress | db_app, session, oidc | 2 CPU, 512 MiB |
+| app | `mini-siem-app:local` (python 3.12 slim trixie `@sha256:37fc60…`) | 10001 | edge, backend, egress (unused since Phase 1) | db_app | 2 CPU, 512 MiB |
+| auth (login service, Phase 1, N12) | same image, `siem.auth_main:create_app` | 10001 | edge, backend, egress (Entra ID) | db_auth, session (OIDC state key), oidc | 1 CPU, 256 MiB |
 | worker | same image | 10001 | backend, egress | db_worker, checkpoint key, s3 keys | 1 CPU, 384 MiB |
 | migrate | same image (one-shot) | 10001 | backend | db_owner | 1 CPU, 256 MiB |
 | emergency | same image (CLI, on demand) | 10001 | backend | db_emergency | 0.5 CPU, 128 MiB |
@@ -23,8 +24,12 @@ lacks AppArmor; the script fails loudly if it is missing on the VM).
 
 ## 2. Identity, sessions and authorization
 
+* Sign-in runs in a **separate login service** (`auth` container): Caddy routes `/auth/login`,
+  `/auth/callback`, `/auth/logout` and `/auth/breakglass` there and everything else to the web app. Only
+  its DB role can create a session (N12); the web app authenticates, refreshes and expires sessions but
+  cannot create one, and holds neither the OIDC client secret nor the state-cookie key. **[V]**
 * Entra ID OIDC authorization-code flow with PKCE (S256), state and nonce in a signed 10-minute
-  `__Host-oidc` cookie. **[V]** in-process with real JOSE validation; live tenant **[I]**.
+  `__Host-oidc` cookie (login service only). **[V]** in-process with real JOSE validation; live tenant **[I]**.
 * Identity = (`tid`, `oid`); UPN is display only. Users are provisioned by object ID; first admin only
   while the users table is empty. **[V]**
 * Server-side sessions: 256-bit random token in `__Host-siem` (Secure, HttpOnly, SameSite=Lax, Path=/),
@@ -42,7 +47,8 @@ lacks AppArmor; the script fails loudly if it is missing on the VM).
 |---|---|---|
 | `siem_bootstrap` (superuser) | local socket inside the container only | log in over any network (pg_hba reject) |
 | owner (`siem_owner`) | own schema, run migrations | superuser/createrole/createdb/replication/bypassrls |
-| app (`siem_app`) | read users/events/audit; manage own sessions; call admin functions; append audit rows | INSERT users, UPDATE role/active/oid, touch tokens, UPDATE/DELETE/TRUNCATE audit, write verification status |
+| app (`siem_app`) | read users/events/audit; read, refresh (`last_seen_at`) and delete sessions; call admin functions; append audit rows | **create sessions** (no INSERT, no `bootstrap_first_admin` / `consume_breakglass`; N12), INSERT users, UPDATE role/active/oid, touch tokens, UPDATE/DELETE/TRUNCATE audit, write verification status |
+| login service (`siem_auth`) | read users; set `last_login_at`; read/insert/delete sessions; append audit rows; read `audit_head`; call `bootstrap_first_admin`, `consume_breakglass` | update sessions or role/active/oid; insert/delete users; read break-glass tokens, customers, staff assignments, events, verification status; call admin functions or `session_customer_ids`; connect except from `backend` |
 | worker | read audit; insert verification status; run cleanup/prune functions | read users/sessions; write audit |
 | emergency | read id/email/role/active; insert tokens; append audit | read OIDs; update users; set `used_at` |
 | ingest | insert specific event columns | read anything; connect except from `collect_db` |
@@ -74,7 +80,7 @@ PostgreSQL, psycopg) and Authlib/joserfc. No custom algorithms.
 * Docker networks: `backend` and `collect_db` are `internal` (no route out) **[V]**; pg_hba binds each role
   to its network **[V]**.
 * TLS: Caddy TLS 1.2/1.3, AEAD suites only, HSTS 2 years **[V]** (Nmap); DB TLS 1.3 verify-full **[V]**;
-  Caddy→app plaintext on a 2-member bridge (residual) — mTLS proposed **[P]**.
+  Caddy→app and Caddy→auth plaintext on a 3-member bridge (residual) — mTLS proposed **[P]**.
 
 ## 6. Secrets
 

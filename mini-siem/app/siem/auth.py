@@ -7,6 +7,9 @@
 - Sessions are random tokens; only their SHA-256 hash is stored.
 - Break-glass: a one-time link created from the server's command line (needs
   SSH from the management network). There is no password login to attack.
+- Sessions are CREATED only by the separate login service (`siem.auth_main`), which
+  alone holds the DB role allowed to INSERT into `sessions` (N12). The web app
+  (`siem.main`) imports this module only to authenticate existing sessions.
 """
 from __future__ import annotations
 
@@ -84,27 +87,33 @@ def create_session(response: Response, request: Request, user_id: int, via: str,
                         path="/", max_age=hours * 3600)
 
 
-def load_session(request: Request, settings: Settings) -> dict | None:
+_SESSION_READ = """SELECT s.id_hash, s.csrf_token, s.via, s.last_seen_at, s.expires_at,
+                          u.id AS user_id, u.email, u.role, u.active
+                   FROM sessions s JOIN users u ON u.id = s.user_id
+                   WHERE s.id_hash = %s"""
+_SESSION_FOR_UPDATE = _SESSION_READ + " FOR UPDATE OF s"
+
+
+def load_session(request: Request, settings: Settings, touch: bool = True) -> dict | None:
+    """Authenticate the session cookie. touch=False is for the login service, whose
+    DB role may read and delete sessions but not update them: no row lock and no
+    last_seen_at refresh (used by logout, which deletes the row anyway)."""
     token = request.cookies.get(SESSION_COOKIE)
     if not token or len(token) > 100:
         return None
     idle = timedelta(minutes=settings.session_idle_minutes)
     with db.tx() as conn:
-        row = conn.execute(
-            """SELECT s.id_hash, s.csrf_token, s.via, s.last_seen_at, s.expires_at,
-                      u.id AS user_id, u.email, u.role, u.active
-               FROM sessions s JOIN users u ON u.id = s.user_id
-               WHERE s.id_hash = %s FOR UPDATE OF s""",
-            (hash_token(token),),
-        ).fetchone()
+        row = conn.execute(_SESSION_FOR_UPDATE if touch else _SESSION_READ,
+                           (hash_token(token),)).fetchone()
         if not row:
             return None
         now = _now()
         if not row["active"] or (row["via"] == "breakglass" and row["role"] != "super_admin") or row["expires_at"] <= now or row["last_seen_at"] + idle <= now:
             conn.execute("DELETE FROM sessions WHERE id_hash = %s", (row["id_hash"],))
             return None
-        conn.execute("UPDATE sessions SET last_seen_at = %s WHERE id_hash = %s",
-                     (now, row["id_hash"]))
+        if touch:
+            conn.execute("UPDATE sessions SET last_seen_at = %s WHERE id_hash = %s",
+                         (now, row["id_hash"]))
     return row
 
 
@@ -114,6 +123,15 @@ def get_settings(request: Request) -> Settings:
 
 def current_user(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     sess = load_session(request, settings)
+    if sess is None:
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    request.state.user = sess
+    return sess
+
+
+def logout_user(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """current_user for the login service: same checks, read-only on the session row."""
+    sess = load_session(request, settings, touch=False)
     if sess is None:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     request.state.user = sess
@@ -221,7 +239,7 @@ def finish_sso(request, settings, claims, ip, ua):
 
 
 @router.post("/auth/logout")
-def logout(request: Request, csrf: str = Form(""), user: dict = Depends(current_user)):
+def logout(request: Request, csrf: str = Form(""), user: dict = Depends(logout_user)):
     check_csrf(user, csrf)
     with db.tx() as conn:
         conn.execute("DELETE FROM sessions WHERE id_hash = %s", (user["id_hash"],))

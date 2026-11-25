@@ -2,7 +2,8 @@
 
 * Least privilege at the database level, probed with each role's REAL credentials.
 * pg_hba network confinement and TLS-only database access.
-* The web DB credential alone can no longer escalate privileges or change roles silently.
+* The web DB credential alone can no longer escalate privileges or change roles silently,
+  and cannot create (forge) a session: only the login service's role can (N12).
 * Integrity failures are surfaced on the audit page (not only as a missing heartbeat).
 * The operator verification command (`siem.worker --verify-once`).
 """
@@ -43,6 +44,27 @@ def _denied(lab, kind, sql, params=()):
     ("app", "SELECT admin_actor('x', 30)"),
     ("app", "CREATE TABLE pwn(i int)"),
     ("app", "SELECT pg_read_file('/etc/passwd')"),
+    # N12: the web role cannot create sessions, nor mint one through the sign-in functions.
+    ("app", "INSERT INTO sessions(id_hash,user_id,csrf_token,via,expires_at) SELECT sha256('x'), id, repeat('c',43), 'sso', now()+interval '1 hour' FROM users LIMIT 1"),
+    ("app", "SELECT * FROM consume_breakglass(sha256('x'))"),
+    ("app", "SELECT * FROM bootstrap_first_admin(gen_random_uuid(), 'x@x.test')"),
+    # The login-service role: sessions and sign-in only.
+    ("auth", "UPDATE users SET role='super_admin'"),
+    ("auth", "UPDATE users SET active=true"),
+    ("auth", "INSERT INTO users(email,entra_oid,role) VALUES ('x@x.test',gen_random_uuid(),'super_admin')"),
+    ("auth", "DELETE FROM users"),
+    ("auth", "UPDATE sessions SET last_seen_at=now()"),
+    ("auth", "SELECT * FROM breakglass_tokens"),
+    ("auth", "SELECT * FROM customers"),
+    ("auth", "SELECT * FROM staff_customers"),
+    ("auth", "SELECT * FROM security_events"),
+    ("auth", "SELECT * FROM audit_verification"),
+    ("auth", "UPDATE audit_log SET actor='x'"),
+    ("auth", "UPDATE audit_head SET last_id=0"),
+    ("auth", "SELECT admin_actor('x', 30)"),
+    ("auth", "SELECT session_customer_ids('x', 30)"),
+    ("auth", "SELECT admin_create_customer('x', 30, 'pwn', 'pwn')"),
+    ("auth", "CREATE TABLE pwn(i int)"),
     ("worker", "SELECT * FROM users"),
     ("worker", "SELECT * FROM sessions"),
     ("worker", "INSERT INTO audit_log(id,actor,action,severity,prev_hash,hash) VALUES (1,'w','w','info','','')"),
@@ -60,7 +82,7 @@ def test_role_is_denied(lab, kind, sql):
 
 
 def test_no_runtime_role_is_privileged(lab):
-    roles = [lab.role(k) for k in ("owner", "app", "worker", "emergency", "ingest")]
+    roles = [lab.role(k) for k in ("owner", "app", "worker", "emergency", "ingest", "auth")]
     out = lab.bootstrap_sql("SELECT string_agg(rolname, ',') FROM pg_roles WHERE rolname = ANY(ARRAY['"
                             + "','".join(roles) + "']) AND (rolsuper OR rolcreaterole OR rolcreatedb OR "
                             "rolreplication OR rolbypassrls)")
@@ -122,6 +144,54 @@ def test_stolen_app_credential_cannot_escalate_without_live_admin_session(lab, w
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("SELECT * FROM admin_set_role(%s, 30, %s, 'super_admin')", (token, _uid(lab, ANALYST[0])))
     assert lab.bootstrap_sql(f"SELECT role FROM users WHERE email='{ANALYST[0]}'") == "analyst"
+
+
+def test_app_password_cannot_forge_session(lab):
+    """N12 (Phase 1 review): with ONLY the web DB password, insert a 'sso' session for the
+    super admin, then use it as the session-bound customer scope and as an admin token."""
+    token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    h = hashlib.sha256(token.encode()).digest()
+    with lab.connect("app") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("INSERT INTO sessions(id_hash,user_id,csrf_token,via,expires_at) "
+                         "SELECT %s, id, %s, 'sso', now()+interval '1 hour' FROM users WHERE email=%s",
+                         (h, csrf, BOSS[0]))
+    assert lab.bootstrap_sql("SELECT count(*) FROM sessions") == "0"
+    with lab.connect("app") as conn:
+        conn.execute("SELECT set_config('siem.session', %s, false)", (token,))
+        ids = conn.execute("SELECT session_customer_ids(current_setting('siem.session'), 30) AS ids").fetchone()["ids"]
+        assert ids == []
+        assert conn.execute("SELECT count(*) AS n FROM customers").fetchone()["n"] == 0
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT admin_create_customer(current_setting('siem.session'), 30, 'forged-co', 'Forged')")
+    assert lab.bootstrap_sql("SELECT count(*) FROM customers WHERE slug='forged-co'") == "0"
+
+
+def _secret_names(lab, service):
+    import subprocess
+    r = subprocess.run(["docker", "exec", f"{lab.project}-{service}-1", "ls", "/run/secrets"],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return set(r.stdout.split())
+
+
+def test_service_secrets_are_separated(lab):
+    app, auth = _secret_names(lab, "app"), _secret_names(lab, "auth")
+    assert "db_app_password" in app
+    assert not app & {"oidc_client_secret", "db_auth_password", "session_secret"}, app
+    assert {"db_auth_password", "oidc_client_secret", "session_secret"} <= auth
+    assert "db_app_password" not in auth, auth
+
+
+def test_web_app_does_not_serve_login_routes(lab):
+    """Caddy sends /auth/* to the login service; the web app itself has no such route."""
+    import subprocess
+    probe = ("import urllib.request,urllib.error\n"
+             "try:\n urllib.request.urlopen('http://127.0.0.1:8000/auth/login', timeout=5); print('OPEN')\n"
+             "except urllib.error.HTTPError as e: print(e.code)\n")
+    r = subprocess.run(["docker", "exec", "-i", f"{lab.project}-app-1", "python", "-"], input=probe,
+                       capture_output=True, text=True, timeout=30)
+    assert r.stdout.strip() == "404", r.stdout + r.stderr
 
 
 def test_even_with_admin_session_an_unaudited_change_cannot_commit(lab):

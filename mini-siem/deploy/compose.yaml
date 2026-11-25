@@ -26,6 +26,7 @@ x-app-env: &app-env
   SIEM_DB_WORKER_USER: ${SIEM_DB_WORKER_USER}
   SIEM_DB_EMERGENCY_USER: ${SIEM_DB_EMERGENCY_USER}
   SIEM_DB_INGEST_USER: siem_ingest
+  SIEM_DB_AUTH_USER: ${SIEM_DB_AUTH_USER:?Set SIEM_DB_AUTH_USER in .env (see .env.example)}
 
 services:
   caddy:
@@ -47,9 +48,12 @@ services:
       edge: { ipv4_address: "${CADDY_IP}" }
     depends_on:
       app: { condition: service_healthy }
+      auth: { condition: service_healthy }
     deploy:
       resources: { limits: { cpus: "1", memory: 256M, pids: 256 } }
 
+  # Web app: authenticates existing sessions, never creates one (no INSERT on
+  # sessions for its DB role), and holds no OIDC client secret (N12).
   app:
     <<: *hardening
     build: ../app
@@ -57,7 +61,7 @@ services:
     environment:
       <<: *app-env
       FORWARDED_ALLOW_IPS: ${CADDY_IP}   # trust X-Forwarded-For only from Caddy
-    secrets: [db_app_password, session_secret, oidc_client_secret]
+    secrets: [db_app_password]
     volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
     tmpfs: ["/tmp:size=32m"]
     networks: [edge, backend, egress]
@@ -65,6 +69,27 @@ services:
       migrate: { condition: service_completed_successfully }
     deploy:
       resources: { limits: { cpus: "2", memory: 512M, pids: 256 } }
+
+  # Login service: the ONLY process that may create sessions (N12). Serves
+  # /auth/login, /auth/callback, /auth/logout and /auth/breakglass behind Caddy.
+  # egress: it is the component that talks to Entra ID (metadata, token, JWKS).
+  auth:
+    <<: *hardening
+    image: mini-siem-app:local
+    command: ["uvicorn", "--factory", "siem.auth_main:create_app", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--no-server-header", "--no-date-header", "--no-access-log", "--workers", "1",
+              "--limit-concurrency", "64", "--timeout-keep-alive", "5"]
+    environment:
+      <<: *app-env
+      FORWARDED_ALLOW_IPS: ${CADDY_IP}   # trust X-Forwarded-For only from Caddy
+    secrets: [db_auth_password, session_secret, oidc_client_secret]
+    volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
+    tmpfs: ["/tmp:size=32m"]
+    networks: [edge, backend, egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources: { limits: { cpus: "1", memory: 256M, pids: 128 } }
 
   worker:
     <<: *hardening
@@ -158,8 +183,9 @@ services:
       SIEM_DB_WORKER_USER: ${SIEM_DB_WORKER_USER}
       SIEM_DB_EMERGENCY_USER: ${SIEM_DB_EMERGENCY_USER}
       SIEM_DB_INGEST_USER: siem_ingest
+      SIEM_DB_AUTH_USER: ${SIEM_DB_AUTH_USER}
     command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/db-tls/server.crt", "-c", "ssl_key_file=/db-tls/server.key", "-c", "hba_file=/db-tls/pg_hba.conf"]
-    secrets: [db_bootstrap_password, db_owner_password, db_app_password, db_worker_password, db_emergency_password, db_ingest_password]
+    secrets: [db_bootstrap_password, db_owner_password, db_app_password, db_worker_password, db_emergency_password, db_ingest_password, db_auth_password]
     volumes:
       - ${DATA_DIR}/postgres:/var/lib/postgresql/data
       - ./postgres/tls/server.crt:/db-tls/server.crt:ro
@@ -201,7 +227,7 @@ services:
       resources: { limits: { cpus: "${CLICKHOUSE_CPUS:-2}", memory: "${CLICKHOUSE_MEMORY:-4G}", pids: 2048 } }
 
 networks:
-  edge:            # Caddy <-> app. Not internal, because Caddy publishes 443.
+  edge:            # Caddy <-> app and auth. Not internal, because Caddy publishes 443.
     ipam:
       # Dynamic addresses come from EDGE_DYNAMIC_RANGE so they never take CADDY_IP.
       config: [{ subnet: "${EDGE_SUBNET}", ip_range: "${EDGE_DYNAMIC_RANGE}" }]
@@ -218,7 +244,7 @@ networks:
       config: [{ subnet: "${COLLECT_DB_SUBNET}" }]
   future_data:
     internal: true
-  egress:          # Outbound HTTPS for Entra ID and S3 only (nftables enforces ports).
+  egress:          # Outbound HTTPS for Entra ID (auth) and S3 (worker) only (nftables enforces ports).
     driver: bridge
 
 secrets:
@@ -226,6 +252,7 @@ secrets:
   db_ingest_password: { file: ./secrets/db_ingest_password }
   db_owner_password:  { file: ./secrets/db_owner_password }
   db_app_password:    { file: ./secrets/db_app_password }
+  db_auth_password:   { file: ./secrets/db_auth_password }
   db_worker_password: { file: ./secrets/db_worker_password }
   db_emergency_password: { file: ./secrets/db_emergency_password }
   audit_checkpoint_key: { file: ./secrets/audit_checkpoint_key }

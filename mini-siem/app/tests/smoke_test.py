@@ -2,6 +2,8 @@
 
 Usage: SIEM_URL=https://siem.example:443 python tests/smoke_test.py
 Needs a super admin in the DB and a break-glass code in BREAKGLASS_CODE.
+Sign-in routes (/auth/*) are answered by the login service, everything else by
+the web app; both behind the same Caddy site.
 """
 import os
 import re
@@ -39,6 +41,11 @@ for p in ["/docs", "/openapi.json", "/redoc"]:
     check(f"{p} disabled", c.get(f"{URL}{p}").status_code == 404)
 r = c.post(f"{URL}/auth/breakglass", data={"token": "wrong"})
 check("bad break-glass code rejected", r.headers.get("location") == "/login?error=breakglass")
+# /auth/* is served by the separate login service (N12), with the same headers.
+r = c.post(f"{URL}/auth/logout", data={"csrf": "x"})
+check("login service: logout without session -> /login", r.status_code == 303 and r.headers.get("location") == "/login", r.status_code)
+r = c.get(f"{URL}/auth/nonexistent")
+check("login service: unknown /auth path 404 with headers", r.status_code == 404 and "content-security-policy" in r.headers, r.status_code)
 
 if CODE:
     r = c.post(f"{URL}/auth/breakglass", data={"token": CODE})

@@ -123,7 +123,7 @@ def test_csrf_unicode_is_rejected_without_exception():
 
 def test_tenancy_grants_are_read_only_for_app_and_absent_elsewhere():
     from siem import migrate
-    grants = migrate.role_grants("app", "worker", "emergency", "ingest")
+    grants = migrate.role_grants("app", "worker", "emergency", "ingest", "auth")
     tenancy_fns = (
         "admin_create_customer(text, integer, text, text)",
         "admin_set_customer_active(text, integer, integer, boolean)",
@@ -139,7 +139,7 @@ def test_tenancy_grants_are_read_only_for_app_and_absent_elsewhere():
     assert len(tenancy_lines) == 1 + len(tenancy_fns)
     for line in tenancy_lines:
         assert not any(w in line for w in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "ALL"))
-    for role in ("worker", "emergency", "ingest"):
+    for role in ("worker", "emergency", "ingest", "auth"):
         assert not [s for s in grants[role] if "customer" in s or "staff" in s]
     assert "require_tenant_audit" not in " ".join(sum(grants.values(), []))
 
@@ -155,3 +155,49 @@ def test_migration_6_is_known_and_last():
     import inspect
     assert "current not in (0, 2, 3, 4, 5, 6)" in inspect.getsource(migrate.main)
     assert [p for p, _ in migrate.APP_SCOPED_POLICIES] == ["customers_scope", "staff_customers_scope"]
+
+
+def test_only_the_login_service_role_can_create_sessions():
+    """N12: the web role must not be able to forge a session row (INSERT) or mint
+    one through the sign-in functions; the login-service role gets exactly what
+    sign-in, break-glass consumption and logout need, and nothing else."""
+    from siem import migrate
+    grants = migrate.role_grants("app", "worker", "emergency", "ingest", "auth")
+    assert set(grants) == {"app", "worker", "emergency", "ingest", "auth"}
+    cols = migrate.AUDIT_INSERT_COLUMNS
+    assert grants["auth"] == [
+        "GRANT SELECT ON users TO {r}",
+        "GRANT UPDATE (last_login_at) ON users TO {r}",
+        "GRANT SELECT, INSERT, DELETE ON sessions TO {r}",
+        f"GRANT SELECT, INSERT ({cols}) ON audit_log TO {{r}}",
+        "GRANT SELECT ON audit_head TO {r}",
+        "GRANT EXECUTE ON FUNCTION bootstrap_first_admin(uuid, text) TO {r}",
+        "GRANT EXECUTE ON FUNCTION consume_breakglass(bytea) TO {r}",
+    ]
+    app = grants["app"]
+    assert "GRANT SELECT, DELETE ON sessions TO {r}" in app
+    assert "GRANT UPDATE (last_seen_at) ON sessions TO {r}" in app
+    session_lines = [s for s in app if " sessions " in s]
+    assert session_lines == ["GRANT SELECT, DELETE ON sessions TO {r}",
+                             "GRANT UPDATE (last_seen_at) ON sessions TO {r}"]
+    joined = " ".join(app)
+    assert "bootstrap_first_admin" not in joined and "consume_breakglass" not in joined
+    # No other role may write sessions or call the sign-in functions.
+    for role in ("worker", "emergency", "ingest"):
+        joined = " ".join(grants[role])
+        assert "sessions" not in joined
+        assert "bootstrap_first_admin" not in joined and "consume_breakglass" not in joined
+
+
+def test_grant_roles_requires_five_distinct_runtime_roles(monkeypatch):
+    from siem import migrate
+    monkeypatch.setenv("SIEM_DB_OWNER_USER", "owner")
+
+    class Cur:
+        def execute(self, *a):
+            pass
+    with pytest.raises(ValueError):
+        migrate.grant_roles(Cur(), "app", "worker", "emergency", "ingest", "app")
+    with pytest.raises(ValueError):
+        migrate.grant_roles(Cur(), "app", "worker", "emergency", "ingest", "owner")
+    migrate.grant_roles(Cur(), "app", "worker", "emergency", "ingest", "auth")

@@ -21,7 +21,12 @@ hidden**:
 It also found that proxy-generated error pages had no security headers.
 
 All of these are fixed in Phase 0.1 and have regression tests that fail on the candidate code and
-pass on the release. **No exploitable Critical or High issue remains in the tested scope.** Untested
+pass on the release. **No exploitable Critical or High issue remains in the tested scope.**
+
+> **Correction (2026-11-24, Phase 1 review):** the statement above was wrong. P7 did not cover a forged
+> session row inserted with the web DB password; that attack worked against Phase 0.1 and is a **High**
+> finding (N12, VULNERABILITY_REMEDIATION.md). It is fixed in Phase 1 by a separate login service whose
+> DB role alone may create sessions (P21). Untested
 surfaces (live Entra ID, Wasabi, AppArmor on the real VM, OWASP ZAP) are listed in §5.
 
 ## 2. Attack narrative and results (Phase 0.1 release)
@@ -34,7 +39,7 @@ surfaces (live Entra ID, Wasabi, AppArmor on the real VM, OWASP ZAP) are listed 
 | P4 | Session attacks | random, garbage, SQL-ish cookies; fixation (pre-planted cookie); reuse after logout; idle expiry | All rejected; new token issued at login | `test_live_http.py` |
 | P5 | CSRF / cross-origin | POST with no / `null` / foreign / http origin; missing CSRF token | 403, no state change | `test_live_http.py` |
 | P6 | Vertical privilege escalation via UI | analyst session → admin pages and admin POSTs | 403 | `test_live_http.py` |
-| P7 | Escalation with stolen web DB password | `UPDATE users SET role`, `INSERT users`, admin functions with no/garbage/analyst/expired token | `42501` permission denied / not authorized | `test_live_hardening.py` |
+| P7 | Escalation with stolen web DB password | `UPDATE users SET role`, `INSERT users`, admin functions with no/garbage/analyst/expired token | `42501` permission denied / not authorized. **Correction:** this test did **not** try inserting a forged session row with the web DB password, which succeeded and gave a valid super-admin token (N12, High, found in the Phase 1 review). Fixed in Phase 1; see P21. | `test_live_hardening.py` |
 | P8 | Escalation with stolen DB password + live admin token, hiding it | call `admin_set_role` but skip the audit write; forge `txid` | COMMIT refused; `txid` not insertable | `test_live_hardening.py` |
 | P9 | Audit tampering as schema owner | disable triggers then edit / renumber / reorder / truncate / delete all / edit + re-hash entire chain | Detected by worker; alarm on audit page | `test_live_audit_tamper.py`, `test_tampering_is_surfaced_on_audit_page` |
 | P10 | Audit rollback via old backup | restore older dump while checkpoint is newer | `AuditIntegrityError at id 554` | `evidence/dr-rollback-detection.txt` |
@@ -47,6 +52,7 @@ surfaces (live Entra ID, Wasabi, AppArmor on the real VM, OWASP ZAP) are listed 
 | P17 | Role privilege abuse | 26 forbidden statements across app/worker/emergency/owner | All denied | `test_role_is_denied` |
 | P18 | Resource exhaustion | 1,500 req/s for 120 s; 50k-source limiter flood (unit); oversized/ambiguous bodies | Bounded (<250 MiB total), no crash, 413/429/503 with headers | `evidence/load-flood-*`, tests |
 | P19 | Container escape surface | runtime inspection of every container | non-root, CapEff=0, NoNewPrivs, seccomp, read-only; AppArmor unavailable in lab | `evidence/verify-deployment.txt` |
+| P21 | Forge a session with the stolen web DB password (added after the Phase 1 review) | `INSERT INTO sessions … via='sso'` for the super admin as `siem_app`; use the token for `admin_create_customer` / `session_customer_ids`; call `consume_breakglass` / `bootstrap_first_admin` | Before the fix: `INSERT 0 1`, token accepted. After: `42501`; scope `{}`; admin function `42501` | `test_app_password_cannot_forge_session`, `db_acceptance.sql` |
 | P20 | Secrets exposure | Gitleaks over tree + git history; `docker inspect` env; settings `repr` | No leaks; secrets only as files per service | `evidence/gitleaks-*` |
 
 ## 3. Findings discovered by live testing of the Phase 1 candidate
@@ -54,6 +60,7 @@ surfaces (live Entra ID, Wasabi, AppArmor on the real VM, OWASP ZAP) are listed 
 | ID | Severity | Finding | Proof (candidate) | Status |
 |---|---|---|---|---|
 | N2 | Medium | `siem_app` could `UPDATE users SET role='super_admin'` with no audit | psql as `siem_app` → `UPDATE 1` | Fixed (P7, P8) |
+| N12 | High | `siem_app` could INSERT a forged `via='sso'` super-admin session (found later, in the Phase 1 review, not in this test) | psql as `siem_app` → `INSERT 0 1`; token accepted by `admin_actor` | Fixed in Phase 1 (P21) |
 | N1 | Medium | Forged/invalid ID tokens → unhandled joserfc exception → HTTP 500, no audit row | 12/12 negative OIDC cases returned 500 | Fixed (P3) |
 | N3 | Medium | After full chain re-hash, console showed "Hash chain intact" | owner re-hash + page view | Fixed (P9) |
 | R9b | Low | Caddy-generated 413 without any security header, `Server: Caddy` leaked | live header test 1/51 failing | Fixed |

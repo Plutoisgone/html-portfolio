@@ -46,6 +46,22 @@ for id in "${ids[@]}"; do
   [[ -z "$secrets" ]] || warn "$svc" "whole secrets directory mounted ($secrets)"
 done
 
+# N12: only the login service may create sessions; each service holds only its own secrets.
+secret_mounts() {  # names of the Docker secrets mounted into a running service container
+  local cid; cid=$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" --filter "label=com.docker.compose.service=$1" | head -1)
+  [[ -n "$cid" ]] || return 1
+  docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$cid" | sed -n 's#^/run/secrets/##p' | sort
+}
+check_secrets() {  # service, required secrets, forbidden secrets
+  local svc=$1 have; have=$(secret_mounts "$svc") || { fail "$svc" "service not running"; return; }
+  for s in $2; do grep -qx "$s" <<<"$have" && pass "$svc" "has secret $s" || fail "$svc" "missing secret $s"; done
+  for s in $3; do grep -qx "$s" <<<"$have" && fail "$svc" "must not hold secret $s" || pass "$svc" "does not hold $s"; done
+}
+check_secrets app  "db_app_password" "db_auth_password oidc_client_secret session_secret"
+check_secrets auth "db_auth_password oidc_client_secret session_secret" "db_app_password"
+authcmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" --filter label=com.docker.compose.service=auth | head -1)" 2>/dev/null)
+[[ "$authcmd" == *siem.auth_main:create_app* ]] && pass "auth" "runs the login service (siem.auth_main)" || fail "auth" "unexpected command: ${authcmd:-none}"
+
 for net in backend collect_db; do
   internal=$(docker network inspect -f '{{.Internal}}' "${PROJECT}_${net}" 2>/dev/null)
   [[ "$internal" == true ]] && pass "network" "${net} is internal (no route out)" || fail "network" "${net} internal=${internal:-missing}"

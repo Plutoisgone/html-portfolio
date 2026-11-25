@@ -460,12 +460,16 @@ ADMIN_FUNCTIONS = (
     "admin_create_user(text, integer, text, uuid, text)",
     "admin_set_role(text, integer, integer, text)",
     "admin_set_active(text, integer, integer, boolean)",
-    "bootstrap_first_admin(uuid, text)",
-    "consume_breakglass(bytea)",
     "admin_create_customer(text, integer, text, text)",
     "admin_set_customer_active(text, integer, integer, boolean)",
     "admin_assign_staff(text, integer, integer, integer, boolean)",
     "session_customer_ids(text, integer)",
+)
+
+# Session-creating functions: only the login service's role may call them (N12).
+SIGN_IN_FUNCTIONS = (
+    "bootstrap_first_admin(uuid, text)",
+    "consume_breakglass(bytea)",
 )
 
 # Row-level security policies that apply only to the web role (see migration 6).
@@ -475,15 +479,17 @@ APP_SCOPED_POLICIES = (
 )
 
 
-def role_grants(app_role, worker_role, emergency_role, ingest_role) -> dict[str, list[str]]:
+def role_grants(app_role, worker_role, emergency_role, ingest_role, auth_role) -> dict[str, list[str]]:
     """The complete, deny-by-default privilege set for every runtime role."""
     return {
         app_role: [
             # No INSERT and no UPDATE(role, active) on users: privileged changes
             # go through the session-authenticated SECURITY DEFINER functions.
+            # No INSERT on sessions and no sign-in functions (N12): the web role
+            # only authenticates, refreshes and expires sessions the login service made.
             "GRANT SELECT ON users TO {r}",
             "GRANT UPDATE (last_login_at) ON users TO {r}",
-            "GRANT SELECT, INSERT, DELETE ON sessions TO {r}",
+            "GRANT SELECT, DELETE ON sessions TO {r}",
             "GRANT UPDATE (last_seen_at) ON sessions TO {r}",
             f"GRANT SELECT, INSERT ({AUDIT_INSERT_COLUMNS}) ON audit_log TO {{r}}",
             "GRANT SELECT ON audit_head, audit_verification TO {r}",
@@ -508,12 +514,23 @@ def role_grants(app_role, worker_role, emergency_role, ingest_role) -> dict[str,
         ingest_role: [
             "GRANT INSERT (source_id, facility, severity, message, rule_id) ON security_events TO {r}",
         ],
+        # Login service (siem.auth_main): the ONLY role that can create a session.
+        # Nothing on customers/staff_customers, events, break-glass tokens or the
+        # admin functions; no UPDATE on sessions (logout deletes, never refreshes).
+        auth_role: [
+            "GRANT SELECT ON users TO {r}",
+            "GRANT UPDATE (last_login_at) ON users TO {r}",
+            "GRANT SELECT, INSERT, DELETE ON sessions TO {r}",
+            f"GRANT SELECT, INSERT ({AUDIT_INSERT_COLUMNS}) ON audit_log TO {{r}}",
+            "GRANT SELECT ON audit_head TO {r}",
+            *[f"GRANT EXECUTE ON FUNCTION {fn} TO {{r}}" for fn in SIGN_IN_FUNCTIONS],
+        ],
     }
 
 
-def grant_roles(cur, app_role, worker_role, emergency_role, ingest_role):
-    grants = role_grants(app_role, worker_role, emergency_role, ingest_role)
-    if len(grants) != 4 or env("SIEM_DB_OWNER_USER", required=True) in grants:
+def grant_roles(cur, app_role, worker_role, emergency_role, ingest_role, auth_role):
+    grants = role_grants(app_role, worker_role, emergency_role, ingest_role, auth_role)
+    if len(grants) != 5 or env("SIEM_DB_OWNER_USER", required=True) in grants:
         raise ValueError("Database service roles must be distinct")
     cur.execute("REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC")
     for role, statements in grants.items():
@@ -560,7 +577,8 @@ def main() -> int:
             cur.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
             grant_roles(cur, app_role, env("SIEM_DB_WORKER_USER", required=True),
                         env("SIEM_DB_EMERGENCY_USER", required=True),
-                        env("SIEM_DB_INGEST_USER", required=True))
+                        env("SIEM_DB_INGEST_USER", required=True),
+                        env("SIEM_DB_AUTH_USER", required=True))
         conn.commit()
     print("Database schema is up to date.")
     return 0

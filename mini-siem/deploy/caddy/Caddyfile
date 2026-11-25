@@ -43,12 +43,28 @@
 		max_size 16KB
 	}
 
-	reverse_proxy app:8000 {
-		header_up X-Forwarded-Proto https
-		header_down -Server
-		transport http {
-			dial_timeout 5s
-			response_header_timeout 30s
+	# Sign-in, callback, logout and break-glass go to the separate login service,
+	# the only component whose DB role may create sessions (N12). Everything else
+	# goes to the web app. Security headers above apply to both.
+	handle /auth/* {
+		reverse_proxy auth:8000 {
+			header_up X-Forwarded-Proto https
+			header_down -Server
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy app:8000 {
+			header_up X-Forwarded-Proto https
+			header_down -Server
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
 		}
 	}
 

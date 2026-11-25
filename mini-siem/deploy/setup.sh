@@ -18,10 +18,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || die "Invalid .env assignment."
   key=${BASH_REMATCH[1]}; value=${BASH_REMATCH[2]}
   case "$key" in
-    SIEM_HOSTNAME|SIEM_BIND_IP|SIEM_TLS|SIEM_OIDC_TENANT_ID|SIEM_OIDC_CLIENT_ID|SIEM_INITIAL_SUPER_ADMIN_OIDS|SIEM_REQUIRE_MFA_CLAIM|SIEM_SESSION_IDLE_MINUTES|SIEM_SESSION_ABSOLUTE_HOURS|SIEM_S3_ENDPOINT|SIEM_S3_REGION|SIEM_S3_BUCKET|SIEM_AUDIT_RETENTION_DAYS|SIEM_HEARTBEAT_URL|EDGE_SUBNET|CADDY_IP|EDGE_DYNAMIC_RANGE|BACKEND_SUBNET|COLLECT_DB_SUBNET|SIEM_DB_OWNER_USER|SIEM_DB_APP_USER|SIEM_DB_WORKER_USER|SIEM_DB_EMERGENCY_USER|DATA_DIR|CLICKHOUSE_CPUS|CLICKHOUSE_MEMORY) export "$key=$value" ;;
+    SIEM_HOSTNAME|SIEM_BIND_IP|SIEM_TLS|SIEM_OIDC_TENANT_ID|SIEM_OIDC_CLIENT_ID|SIEM_INITIAL_SUPER_ADMIN_OIDS|SIEM_REQUIRE_MFA_CLAIM|SIEM_SESSION_IDLE_MINUTES|SIEM_SESSION_ABSOLUTE_HOURS|SIEM_S3_ENDPOINT|SIEM_S3_REGION|SIEM_S3_BUCKET|SIEM_AUDIT_RETENTION_DAYS|SIEM_HEARTBEAT_URL|EDGE_SUBNET|CADDY_IP|EDGE_DYNAMIC_RANGE|BACKEND_SUBNET|COLLECT_DB_SUBNET|SIEM_DB_OWNER_USER|SIEM_DB_APP_USER|SIEM_DB_WORKER_USER|SIEM_DB_EMERGENCY_USER|SIEM_DB_AUTH_USER|DATA_DIR|CLICKHOUSE_CPUS|CLICKHOUSE_MEMORY) export "$key=$value" ;;
     *) die "Unexpected .env key: $key" ;;
   esac
 done < .env
+[[ -n "${SIEM_DB_AUTH_USER:-}" ]] || die "SIEM_DB_AUTH_USER is missing from .env. Add SIEM_DB_AUTH_USER=siem_auth (login-service DB role, see .env.example)."
 python3 - <<'VALIDATE'
 import ipaddress, os, re
 from pathlib import Path
@@ -41,8 +42,8 @@ for key in ('SIEM_OIDC_TENANT_ID','SIEM_OIDC_CLIENT_ID'):
     UUID(os.environ[key])
 for oid in os.environ['SIEM_INITIAL_SUPER_ADMIN_OIDS'].split(','):
     UUID(oid.strip())
-roles = [os.environ['SIEM_DB_'+r+'_USER'] for r in ('OWNER','APP','WORKER','EMERGENCY')]
-if len(set(roles)) != 4 or not all(re.fullmatch('[a-z][a-z0-9_]{0,62}', r) and not r.startswith('pg_') and r not in ('siem_bootstrap','siem_ingest') for r in roles):
+roles = [os.environ['SIEM_DB_'+r+'_USER'] for r in ('OWNER','APP','WORKER','EMERGENCY','AUTH')]
+if len(set(roles)) != 5 or not all(re.fullmatch('[a-z][a-z0-9_]{0,62}', r) and not r.startswith('pg_') and r not in ('siem_bootstrap','siem_ingest') for r in roles):
     raise SystemExit('Invalid or duplicate database roles')
 path = Path(os.environ['DATA_DIR'])
 if not path.is_absolute() or path == Path('/') or path.resolve() != path:
@@ -71,7 +72,7 @@ placeholder() {  # value you must fill in yourself
   local f="secrets/$1"
   [[ -e "$f" ]] || { echo "CHANGE_ME" > "$f"; echo "  created $1 (FILL THIS IN)"; }
 }
-for s in db_ingest_password db_bootstrap_password db_owner_password db_app_password db_worker_password db_emergency_password audit_checkpoint_key session_secret ch_admin_password ch_reader_password ch_ingest_password; do
+for s in db_ingest_password db_bootstrap_password db_owner_password db_app_password db_worker_password db_emergency_password db_auth_password audit_checkpoint_key session_secret ch_admin_password ch_reader_password ch_ingest_password; do
   gen "$s"
 done
 placeholder oidc_client_secret
@@ -152,6 +153,8 @@ host      all   siem_bootstrap  all                    reject
 hostnossl all   all             all                    reject
 hostssl   siem  siem_ingest     ${COLLECT_DB_SUBNET}   scram-sha-256
 hostssl   siem  siem_ingest     all                    reject
+hostssl   siem  ${SIEM_DB_AUTH_USER}       ${BACKEND_SUBNET}      scram-sha-256
+hostssl   siem  ${SIEM_DB_AUTH_USER}       all                    reject
 hostssl   siem  all             ${BACKEND_SUBNET}      scram-sha-256
 host      all   all             all                    reject
 HBA
@@ -182,6 +185,20 @@ install -d -m 0700 -o "$CADDY_UID" -g "$CADDY_UID" "$DATA_DIR/caddy" "$DATA_DIR/
 install -d -m 0750 -o root -g "$CADDY_UID" caddy/certs
 
 chmod 0640 .env
+
+# Upgrade path: the role script in postgres/ only runs by itself on the FIRST start
+# of an empty data directory. On an existing database, run the same idempotent
+# script inside the running postgres container (local socket, bootstrap superuser)
+# so roles added by a newer release exist before the app starts, e.g. the
+# login-service role SIEM_DB_AUTH_USER (N12). Grants come from migrate as usual.
+if [[ -e "$DATA_DIR/postgres/PG_VERSION" ]]; then
+  info "Existing database: ensuring all database login roles exist"
+  command -v docker >/dev/null || die "docker is required to update roles on an existing database"
+  docker compose up -d --wait postgres >/dev/null || die "Could not start postgres to update roles"
+  docker compose exec -T postgres sh /docker-entrypoint-initdb.d/01-app-role.sh >/dev/null \
+    || die "Updating database roles failed"
+  echo "  database roles up to date"
+fi
 info "Setup complete."
 if grep -qs CHANGE_ME secrets/*; then
   echo "Still to fill in:"; grep -l CHANGE_ME secrets/* | sed 's/^/  /'

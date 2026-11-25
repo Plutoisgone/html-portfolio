@@ -57,13 +57,20 @@ def test_clean_setup_creates_every_directory_and_is_rerunnable(tmp_path):
         st_ = (data / sub).stat()
         assert st_.st_uid == uid and stat.S_IMODE(st_.st_mode) == mode, sub
     for name in ["db_bootstrap_password", "db_owner_password", "db_app_password", "db_worker_password",
-                 "db_emergency_password", "db_ingest_password", "audit_checkpoint_key", "session_secret"]:
+                 "db_emergency_password", "db_ingest_password", "db_auth_password", "audit_checkpoint_key",
+                 "session_secret"]:
         p = d / "secrets" / name
         assert stat.S_IMODE(p.stat().st_mode) == 0o440 and len(p.read_text().strip()) == 64, name
     key = d / "postgres/tls/server.key"
     assert stat.S_IMODE(key.stat().st_mode) == 0o640 and key.stat().st_gid == 70
     hba = (d / "postgres/pg_hba.conf").read_text()
     assert "hostssl   siem  siem_ingest     172.31.250.64/28" in hba and "hostnossl all   all" in hba
+    # N12: the login-service role is admitted only from the backend network.
+    lines = [l.split() for l in hba.splitlines() if l and not l.startswith("#")]
+    auth = [l for l in lines if l[2] == "siem_auth"]
+    assert auth == [["hostssl", "siem", "siem_auth", "172.31.250.32/27", "scram-sha-256"],
+                    ["hostssl", "siem", "siem_auth", "all", "reject"]]
+    assert lines.index(auth[1]) < lines.index(["hostssl", "siem", "all", "172.31.250.32/27", "scram-sha-256"])
     before = {p.name: p.read_text() for p in (d / "secrets").iterdir()}
     r2 = _run(d)
     assert r2.returncode == 0, r2.stdout + r2.stderr
@@ -71,7 +78,8 @@ def test_clean_setup_creates_every_directory_and_is_rerunnable(tmp_path):
 
 
 @pytest.mark.parametrize("key,value", [("SIEM_BIND_IP", "0.0.0.0"), ("COLLECT_DB_SUBNET", "172.31.250.32/27"),
-                                       ("SIEM_DB_APP_USER", "siem_owner"), ("DATA_DIR", "relative/path")])
+                                       ("SIEM_DB_APP_USER", "siem_owner"), ("DATA_DIR", "relative/path"),
+                                       ("SIEM_DB_AUTH_USER", "siem_app"), ("SIEM_DB_AUTH_USER", "siem_ingest")])
 def test_unsafe_settings_rejected(tmp_path, key, value):
     d = _prepare(tmp_path, **{key: value})
     assert _run(d).returncode != 0
@@ -84,3 +92,12 @@ def test_env_file_is_not_executed(tmp_path):
         f.write(f"SIEM_TLS=$(touch {marker})\n")
     _run(d)
     assert not marker.exists()
+
+
+def test_missing_auth_role_setting_rejected(tmp_path):
+    """An upgraded .env without SIEM_DB_AUTH_USER must stop with a clear message."""
+    d = _prepare(tmp_path)
+    env = [l for l in (d / ".env").read_text().splitlines() if not l.startswith("SIEM_DB_AUTH_USER=")]
+    (d / ".env").write_text("\n".join(env) + "\n")
+    r = _run(d)
+    assert r.returncode != 0 and "SIEM_DB_AUTH_USER" in r.stderr

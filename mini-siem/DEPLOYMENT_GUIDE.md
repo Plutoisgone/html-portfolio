@@ -50,12 +50,19 @@ sudo nano secrets/s3_access_key secrets/s3_secret_key   # if S3 is enabled
 sudo docker compose config --quiet
 sudo docker compose build                        # app + hardened postgres images
 sudo docker compose up -d
-sudo docker compose ps -a                        # app/postgres healthy, worker up, migrate Exited (0)
+sudo docker compose ps -a                        # app/auth/postgres healthy, worker up, migrate Exited (0)
 sudo ./verify-deployment.sh                      # MUST report 0 failures on the VM (AppArmor included)
 ```
 
 Key `.env` settings: `SIEM_BIND_IP` = the VM's management IPv4 (never 0.0.0.0); `SIEM_INITIAL_SUPER_ADMIN_OIDS`;
-non-overlapping `EDGE_SUBNET`, `BACKEND_SUBNET`, `COLLECT_DB_SUBNET` (setup refuses overlaps).
+non-overlapping `EDGE_SUBNET`, `BACKEND_SUBNET`, `COLLECT_DB_SUBNET` (setup refuses overlaps);
+five distinct database role names including `SIEM_DB_AUTH_USER=siem_auth`, the login-service role.
+
+Services: `app` is the web console; `auth` is the separate **login service** (same image, command
+`uvicorn --factory siem.auth_main:create_app`). Caddy sends `/auth/*` (sign-in, Entra callback, logout,
+break-glass) to `auth` and everything else to `app`. Only `auth` holds `oidc_client_secret`,
+`session_secret` (OIDC state cookie) and `db_auth_password`, and only its DB role can create sessions
+(N12). The Entra redirect URI stays `https://<SIEM_HOSTNAME>/auth/callback`.
 TLS: `SIEM_TLS=internal` for a lab, or put your certificate in `caddy/certs/` and set
 `SIEM_TLS=/certs/cert.pem /certs/key.pem`.
 
@@ -84,7 +91,7 @@ cd app && SIEM_LIVE=1 SIEM_LIVE_DEPLOY_DIR=/opt/mini-siem/deploy \
 
 | Task | Command |
 |---|---|
-| Status / logs | `sudo docker compose ps` · `sudo docker compose logs -f app worker` |
+| Status / logs | `sudo docker compose ps` · `sudo docker compose logs -f app auth worker` |
 | Anchored audit verification | `sudo docker compose exec worker python -m siem.worker --verify-once` |
 | Break-glass code | `sudo docker compose run --rm emergency breakglass <SUPER_ADMIN_EMAIL>` (valid 10 min, single use, audited) |
 | Audit integrity status | Console → Audit log (red banner = failed or stale verification) |
@@ -97,6 +104,16 @@ cd app && SIEM_LIVE=1 SIEM_LIVE_DEPLOY_DIR=/opt/mini-siem/deploy \
 * **From the Phase 1 lab candidate (schema v4):** tested in place. Add `COLLECT_DB_SUBNET=172.31.250.64/28`
   (or your value) to `.env`, run `sudo ./setup.sh` (regenerates `pg_hba.conf`), rebuild, `docker compose up -d`.
   Migration 5 applies and **all runtime grants are reset**. Run `--verify-once` afterwards.
+* **To the Phase 1 login service (N12):** add `SIEM_DB_AUTH_USER=siem_auth` to `.env` (setup stops
+  with a message if it is missing), then `sudo ./setup.sh`. It generates `secrets/db_auth_password`,
+  adds the role's `pg_hba` lines and — because the database already exists, so the role script in
+  `postgres/` will not run by itself — starts `postgres` and runs `postgres/01-app-role.sh` inside it
+  (idempotent: creates missing roles, re-asserts attributes and passwords from `secrets/`). Then
+  `sudo docker compose build && sudo docker compose up -d`, and
+  `sudo docker compose up -d --force-recreate caddy` so Caddy loads the new `/auth/*` route. migrate
+  resets all grants: the web role loses `INSERT` on sessions. Run `./verify-deployment.sh`.
+  Restoring a backup taken **before** this change: `restore.sh` appends `SIEM_DB_AUTH_USER=siem_auth`
+  to the restored `.env` if it is missing, and `setup.sh` generates the missing secret (not live-tested).
 * **From Phase 0 (schema v1):** not supported in place (superuser owner, incompatible audit format). Back up
   the old database and its S3 exports as evidence, then install fresh.
 * Images are pinned by digest. To update: pull, scan (`trivy image --ignore-unfixed --severity HIGH,CRITICAL`),
@@ -111,10 +128,12 @@ encrypted and off-host (e.g. Veeam immutable repository). Test a restore on a sc
 
 ## 9. Secret rotation
 
-* `oidc_client_secret`, S3 keys: replace file, `docker compose up -d --force-recreate app worker`.
+* `oidc_client_secret`: replace file, `docker compose up -d --force-recreate auth`. S3 keys: replace
+  file, `docker compose up -d --force-recreate worker`.
 * DB role passwords: change file, then
   `docker compose exec -T postgres psql -U siem_bootstrap -d siem -c "ALTER ROLE <role> PASSWORD '<new>'"`
   (run the command from a root shell without recording history), recreate the affected service.
+  On an existing database `sudo ./setup.sh` does the same for every role from the files in `secrets/`.
 * `audit_checkpoint_key`: rotation requires re-signing the current checkpoint with the new key while the
   worker is stopped, after a successful `--verify-once`; procedure is manual (documented risk).
 * DB TLS: server cert valid 365 days — delete `postgres/tls/server.*`, re-run `setup.sh` (CA kept), restart postgres.

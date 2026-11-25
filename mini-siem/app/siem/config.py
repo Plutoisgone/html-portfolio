@@ -89,15 +89,26 @@ def db_dsn(user_env: str, password_secret: str) -> str:
                          sslmode="verify-full", sslrootcert="/db-ca/ca.crt", connect_timeout=5)
 
 
-def load_settings() -> Settings:
+def load_settings(service: str = "app") -> Settings:
+    """Settings for one HTTP service.
+
+    "app" is the web app: it authenticates existing sessions but never creates one,
+    so it gets the web DB role and no OIDC client secret or OIDC state-cookie key.
+    "auth" is the separate login service: the only process holding the DB role that
+    may INSERT sessions (N12), the OIDC client secret and the state-cookie key.
+    """
+    if service not in ("app", "auth"):
+        raise ConfigError("Unknown service")
+    login = service == "auth"
     settings = Settings(
         hostname=env("SIEM_HOSTNAME", required=True),
         oidc_tenant_id=str(UUID(env("SIEM_OIDC_TENANT_ID", required=True))),
         oidc_client_id=str(UUID(env("SIEM_OIDC_CLIENT_ID", required=True))),
-        oidc_client_secret=secret("oidc_client_secret") or "",
+        oidc_client_secret=(secret("oidc_client_secret") or "") if login else "",
         initial_super_admins=[str(UUID(v)) for v in _csv(env("SIEM_INITIAL_SUPER_ADMIN_OIDS", required=True))],
-        session_secret=secret("session_secret") or "",
-        db_dsn=db_dsn("SIEM_DB_APP_USER", "db_app_password"),
+        session_secret=(secret("session_secret") or "") if login else "",
+        db_dsn=(db_dsn("SIEM_DB_AUTH_USER", "db_auth_password") if login
+                else db_dsn("SIEM_DB_APP_USER", "db_app_password")),
         session_idle_minutes=int(env("SIEM_SESSION_IDLE_MINUTES", "30")),
         session_absolute_hours=int(env("SIEM_SESSION_ABSOLUTE_HOURS", "10")),
         require_mfa_claim=env("SIEM_REQUIRE_MFA_CLAIM", "false").lower() == "true",
@@ -111,10 +122,14 @@ def load_settings() -> Settings:
     )
     if not re.fullmatch(r"(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", settings.hostname):
         raise ConfigError("SIEM_HOSTNAME must be a DNS hostname without a port or path")
-    if not re.fullmatch(r"[0-9a-f]{64}", settings.session_secret):
+    if login and not re.fullmatch(r"[0-9a-f]{64}", settings.session_secret):
         raise ConfigError("Session secret must be a generated 32-byte hex value")
     if not 1 <= settings.session_idle_minutes <= 60 or not 1 <= settings.session_absolute_hours <= 24:
         raise ConfigError("Session lifetime outside allowed bounds")
     if env("SIEM_REQUIRE_MFA_CLAIM", "false").lower() not in {"true", "false"}:
         raise ConfigError("Invalid MFA setting")
     return settings
+
+
+def load_auth_settings() -> Settings:
+    return load_settings("auth")

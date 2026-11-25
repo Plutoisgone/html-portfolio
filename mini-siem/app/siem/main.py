@@ -1,4 +1,9 @@
-"""Application entry point: `uvicorn --factory siem.main:create_app`."""
+"""Web app entry point: `uvicorn --factory siem.main:create_app`.
+
+The web app authenticates existing sessions but never creates one: the sign-in
+routes (/auth/*) are served by the separate login service (siem.auth_main), which
+alone holds the DB role that may INSERT sessions (N12). Caddy routes /auth/* there.
+"""
 from __future__ import annotations
 
 import logging
@@ -13,15 +18,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import auth, db, web
-from .config import load_settings
+from . import db, web
+from .config import Settings, load_settings
 from .security import RateLimitMiddleware, SecurityHeadersMiddleware, RequestBoundaryMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
-def create_app():
-    settings = load_settings()
+def base_app(settings: Settings, oidc_state_cookie: bool = False) -> FastAPI:
+    """FastAPI app with the database pool, request boundary, rate limit, host check
+    and error pages shared by the web app and the login service. Only the login
+    service needs the signed OIDC state cookie (oidc_state_cookie=True)."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -31,21 +38,16 @@ def create_app():
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.settings = settings
-    auth.setup_oauth(settings)
 
     # Order: last added runs first.
-    # Short-lived signed cookie that only holds OIDC state/nonce during sign-in.
-    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret,
-                       session_cookie="__Host-oidc", max_age=600, same_site="lax",
-                       https_only=True)
+    if oidc_state_cookie:
+        # Short-lived signed cookie that only holds OIDC state/nonce during sign-in.
+        app.add_middleware(SessionMiddleware, secret_key=settings.session_secret,
+                           session_cookie="__Host-oidc", max_age=600, same_site="lax",
+                           https_only=True)
     app.add_middleware(RequestBoundaryMiddleware, origin=settings.base_url)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[settings.hostname, "127.0.0.1"])
-
-    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")),
-              name="static")
-    app.include_router(auth.router)
-    app.include_router(web.router)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
@@ -67,5 +69,13 @@ def create_app():
             request, "error.html", {"status": 400, "message": "Bad request.", "user": None},
             status_code=400)
 
-    return SecurityHeadersMiddleware(app)
+    return app
 
+
+def create_app():
+    settings = load_settings()
+    app = base_app(settings)
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")),
+              name="static")
+    app.include_router(web.router)
+    return SecurityHeadersMiddleware(app)

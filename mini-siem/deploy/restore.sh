@@ -16,6 +16,12 @@ src="${1:?usage: restore.sh <backup directory>}"
 [[ ! -e .env && ! -e secrets ]] || { echo "Refusing: this deploy folder already has .env/secrets." >&2; exit 1; }
 
 tar -xf "$src/config.tar"
+# Backups taken before the Phase 1 login service (N12) have no login-service role setting;
+# setup.sh below generates its missing secret and initdb creates the role.
+if ! grep -q '^SIEM_DB_AUTH_USER=' .env; then
+  echo "SIEM_DB_AUTH_USER=siem_auth" >> .env
+  echo "Added SIEM_DB_AUTH_USER=siem_auth to .env (backup predates the login service)."
+fi
 data_dir="$(grep -E '^DATA_DIR=' .env | head -1 | cut -d= -f2-)"
 [[ ! -e "$data_dir/postgres/PG_VERSION" ]] || { echo "Refusing: $data_dir already holds a database." >&2; exit 1; }
 rm -rf "${data_dir:?}/audit-state"

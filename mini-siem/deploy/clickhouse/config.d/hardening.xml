@@ -1,7 +1,7 @@
 <clickhouse>
     <!-- Listen on the internal Docker network only (no ports are published). -->
     <listen_host>0.0.0.0</listen_host>
-    <!-- Native and HTTP only; no MySQL/PostgreSQL wire protocols. -->
+    <!-- No MySQL/PostgreSQL wire protocols; listeners are in tls.xml (HTTPS only). -->
     <mysql_port remove="1"/>
     <postgresql_port remove="1"/>
     <interserver_http_port remove="1"/>
@@ -16,4 +16,29 @@
         <ttl>event_date + INTERVAL 90 DAY</ttl>
     </query_log>
     <display_secrets_in_show_and_select>0</display_secrets_in_show_and_select>
+    <!-- System tables (query_log with other accounts' queries, users, grants...) need an
+         explicit grant; without this every account could read them. -->
+    <select_from_system_db_requires_grant>1</select_from_system_db_requires_grant>
+    <select_from_information_schema_requires_grant>1</select_from_information_schema_requires_grant>
+    <!-- Custom per-query settings: only SQL_ (used by the customer row policy). -->
+    <custom_settings_prefixes>SQL_</custom_settings_prefixes>
+
+    <!-- Memory: stay inside the container limit (CLICKHOUSE_MEMORY, default 3G).
+         ClickHouse reads the cgroup limit as "RAM"; 0.75 leaves headroom for caches
+         and allocator overhead, so the server refuses queries instead of being OOM-killed. -->
+    <max_server_memory_usage>0</max_server_memory_usage>
+    <max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>268435456</mark_cache_size>
+    <index_mark_cache_size>67108864</index_mark_cache_size>
+    <uncompressed_cache_size>134217728</uncompressed_cache_size>
+    <index_uncompressed_cache_size>67108864</index_uncompressed_cache_size>
+    <primary_index_cache_size>134217728</primary_index_cache_size>
+    <query_condition_cache_size>33554432</query_condition_cache_size>
+    <mmap_cache_size>256</mmap_cache_size>
+    <query_cache>
+        <max_size_in_bytes>67108864</max_size_in_bytes>
+        <max_entries>256</max_entries>
+        <max_entry_size_in_bytes>4194304</max_entry_size_in_bytes>
+        <max_entry_size_in_rows>100000</max_entry_size_in_rows>
+    </query_cache>
 </clickhouse>

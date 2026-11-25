@@ -79,7 +79,9 @@ def test_clean_setup_creates_every_directory_and_is_rerunnable(tmp_path):
 
 @pytest.mark.parametrize("key,value", [("SIEM_BIND_IP", "0.0.0.0"), ("COLLECT_DB_SUBNET", "172.31.250.32/27"),
                                        ("SIEM_DB_APP_USER", "siem_owner"), ("DATA_DIR", "relative/path"),
-                                       ("SIEM_DB_AUTH_USER", "siem_app"), ("SIEM_DB_AUTH_USER", "siem_ingest")])
+                                       ("SIEM_DB_AUTH_USER", "siem_app"), ("SIEM_DB_AUTH_USER", "siem_ingest"),
+                                       ("SIEM_EVENT_RETENTION_DAYS", "0"), ("SIEM_EVENT_RETENTION_DAYS", "731"),
+                                       ("CLICKHOUSE_MEMORY", "unlimited")])
 def test_unsafe_settings_rejected(tmp_path, key, value):
     d = _prepare(tmp_path, **{key: value})
     assert _run(d).returncode != 0

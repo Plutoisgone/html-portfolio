@@ -88,6 +88,30 @@ class Lab:
         return httpx.Client(base_url=self.url, verify=self.web_ca, trust_env=False,
                             follow_redirects=False, timeout=15, headers={"Origin": self.url}, **kw)
 
+    def container_ip(self, service: str, network: str = "backend") -> str:
+        r = subprocess.run(["docker", "inspect", "-f",
+                            f'{{{{(index .NetworkSettings.Networks "{self.project}_{network}").IPAddress}}}}',
+                            f"{self.project}-{service}-1"], capture_output=True, text=True, timeout=30)
+        if r.returncode or not r.stdout.strip():
+            raise RuntimeError(f"{service} has no address on {network}: {r.stderr}")
+        return r.stdout.strip()
+
+    def ch(self, user: str, sql: str, settings: dict | None = None, ca: str | None = None):
+        """One query over ClickHouse HTTPS as `user` (password from secrets/ch_<kind>_password).
+
+        Connects to the container's backend address but verifies the certificate for the
+        name "clickhouse", exactly as a service on the Docker network does.
+        """
+        import ssl
+
+        import httpx
+        kind = user.removeprefix("siem_")
+        ctx = ssl.create_default_context(cafile=ca or str(self.deploy / "postgres/tls/ca.crt"))
+        with httpx.Client(verify=ctx, trust_env=False, timeout=15) as c:
+            return c.post(f"https://{self.container_ip('clickhouse')}:8443/", params=settings or {},
+                          content=sql.encode(), extensions={"sni_hostname": "clickhouse"},
+                          headers={"X-ClickHouse-User": user, "X-ClickHouse-Key": self.secret(f"ch_{kind}_password")})
+
     def compose(self, *args: str, input: str | None = None):
         return subprocess.run(["docker", "compose", "-p", self.project, *args], input=input,
                               capture_output=True, text=True, timeout=180, cwd=self.deploy)

@@ -47,8 +47,8 @@ for id in "${ids[@]}"; do
 done
 
 # N12: only the login service may create sessions; each service holds only its own secrets.
-secret_mounts() {  # names of the Docker secrets mounted into a running service container
-  local cid; cid=$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" --filter "label=com.docker.compose.service=$1" | head -1)
+secret_mounts() {  # names of the Docker secrets mounted into a service container (running, or a finished one-shot)
+  local cid; cid=$(docker ps -aq --filter "label=com.docker.compose.project=${PROJECT}" --filter "label=com.docker.compose.service=$1" | head -1)
   [[ -n "$cid" ]] || return 1
   docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$cid" | sed -n 's#^/run/secrets/##p' | sort
 }
@@ -57,10 +57,38 @@ check_secrets() {  # service, required secrets, forbidden secrets
   for s in $2; do grep -qx "$s" <<<"$have" && pass "$svc" "has secret $s" || fail "$svc" "missing secret $s"; done
   for s in $3; do grep -qx "$s" <<<"$have" && fail "$svc" "must not hold secret $s" || pass "$svc" "does not hold $s"; done
 }
-check_secrets app  "db_app_password" "db_auth_password oidc_client_secret session_secret"
+CH_SECRETS="ch_admin_password ch_reader_password ch_ingest_password ch_connector_password"
+check_secrets app  "db_app_password ch_reader_password" "db_auth_password oidc_client_secret session_secret ch_admin_password ch_ingest_password ch_connector_password"
+check_secrets clickhouse "" "$CH_SECRETS db_owner_password"          # users.xml holds hashes only
+check_secrets ch_migrate "ch_admin_password" "ch_reader_password ch_ingest_password ch_connector_password db_owner_password"
 check_secrets auth "db_auth_password oidc_client_secret session_secret" "db_app_password"
 authcmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" --filter label=com.docker.compose.service=auth | head -1)" 2>/dev/null)
 [[ "$authcmd" == *siem.auth_main:create_app* ]] && pass "auth" "runs the login service (siem.auth_main)" || fail "auth" "unexpected command: ${authcmd:-none}"
+
+# ClickHouse: HTTPS 8443 must be its ONLY listening TCP port (no 8123 HTTP, no 9000 native).
+chid=$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" --filter label=com.docker.compose.service=clickhouse | head -1)
+if [[ -n "$chid" ]]; then
+  chpid=$(docker inspect -f '{{.State.Pid}}' "$chid")
+  # (127.0.0.11 = Docker's embedded DNS resolver inside the network namespace, not ClickHouse.)
+  listen=$(for h in $(awk 'FNR>1 && $4=="0A" && $2 !~ /^0B00007F:/ {n=split($2,a,":"); print a[n]}' "/proc/$chpid/net/tcp" "/proc/$chpid/net/tcp6" 2>/dev/null); do
+             echo $((16#$h)); done | sort -un | tr '\n' ' ')
+  [[ "$listen" == "8443 " ]] && pass "clickhouse" "only listener is HTTPS 8443" || fail "clickhouse" "listening TCP ports: ${listen:-none}"
+else
+  fail "clickhouse" "service not running"
+fi
+
+# One-shot services have exited, so the kernel checks above cannot see them; check their
+# container configuration instead (same hardening anchor as the long-running services).
+for svc in migrate ch_migrate; do
+  id=$(docker ps -aq --filter "label=com.docker.compose.project=${PROJECT}" --filter "label=com.docker.compose.service=$svc" | head -1)
+  [[ -n "$id" ]] || { fail "$svc" "one-shot container not found"; continue; }
+  conf=$(docker inspect -f '{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.Privileged}}|{{join .HostConfig.CapDrop ","}}|{{join .HostConfig.CapAdd ","}}|{{join .HostConfig.SecurityOpt ","}}|{{.HostConfig.Memory}}|{{.State.ExitCode}}' "$id")
+  IFS='|' read -r u ro priv drop add sec mem code <<<"$conf"
+  [[ -n "$u" && "${u%%:*}" != 0 && "${u%%:*}" != root && "$ro" == true && "$priv" == false && "$drop" == *ALL* && -z "$add" && "$sec" == *no-new-privileges:true* && "$mem" -gt 0 ]] \
+    && pass "$svc" "one-shot ($u): read-only, caps dropped, no-new-privileges, memory limit (config)" \
+    || fail "$svc" "one-shot hardening config: $conf"
+  [[ "$code" == 0 ]] && pass "$svc" "completed successfully" || fail "$svc" "exit code $code"
+done
 
 for net in backend collect_db; do
   internal=$(docker network inspect -f '{{.Internal}}' "${PROJECT}_${net}" 2>/dev/null)

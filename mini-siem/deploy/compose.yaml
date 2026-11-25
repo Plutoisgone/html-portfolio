@@ -13,6 +13,12 @@ x-hardening: &hardening
     driver: json-file
     options: { max-size: "20m", max-file: "5" }
 
+# How a service reaches ClickHouse: HTTPS only, server certificate verified with the setup CA.
+x-ch-client-env: &ch-client-env
+  SIEM_CH_HOST: clickhouse
+  SIEM_CH_PORT: "8443"
+  SIEM_CH_CA_FILE: /ch-ca/ca.crt
+
 x-app-env: &app-env
   SIEM_HOSTNAME: ${SIEM_HOSTNAME}
   SIEM_OIDC_TENANT_ID: ${SIEM_OIDC_TENANT_ID}
@@ -59,14 +65,17 @@ services:
     build: ../app
     image: mini-siem-app:local
     environment:
-      <<: *app-env
+      <<: [*app-env, *ch-client-env]
       FORWARDED_ALLOW_IPS: ${CADDY_IP}   # trust X-Forwarded-For only from Caddy
-    secrets: [db_app_password]
-    volumes: ["./postgres/tls/ca.crt:/db-ca/ca.crt:ro"]
+    secrets: [db_app_password, ch_reader_password]   # ClickHouse: reader only, never ingest/admin
+    volumes:
+      - ./postgres/tls/ca.crt:/db-ca/ca.crt:ro
+      - ./postgres/tls/ca.crt:/ch-ca/ca.crt:ro
     tmpfs: ["/tmp:size=32m"]
     networks: [edge, backend, egress]
     depends_on:
       migrate: { condition: service_completed_successfully }
+      ch_migrate: { condition: service_completed_successfully }
     deploy:
       resources: { limits: { cpus: "2", memory: 512M, pids: 256 } }
 
@@ -129,6 +138,25 @@ services:
       postgres: { condition: service_healthy }
     deploy:
       resources: { limits: { cpus: "1", memory: 256M, pids: 64 } }
+
+  # One-shot ClickHouse schema migration (database, tables, row policy) as siem_admin.
+  # The only service holding the ClickHouse admin password.
+  ch_migrate:
+    <<: *hardening
+    image: mini-siem-app:local
+    command: ["python", "-m", "siem.ch_schema"]
+    restart: "no"
+    environment:
+      <<: *ch-client-env
+      SIEM_EVENT_RETENTION_DAYS: ${SIEM_EVENT_RETENTION_DAYS:-90}
+    secrets: [ch_admin_password]
+    volumes: ["./postgres/tls/ca.crt:/ch-ca/ca.crt:ro"]
+    networks: [backend]
+    healthcheck: { disable: true }
+    depends_on:
+      clickhouse: { condition: service_healthy }
+    deploy:
+      resources: { limits: { cpus: "0.5", memory: 128M, pids: 32 } }
 
   emergency:
     <<: *hardening
@@ -203,35 +231,44 @@ services:
     deploy:
       resources: { limits: { cpus: "2", memory: 1G, pids: 512 } }
 
+  # Event store. HTTPS 8443 is its only listener (config.d/tls.xml); accounts and
+  # their networks are in users.d/users.xml (setup.sh). Holds no secret files.
   clickhouse:
-    profiles: [future]
     <<: *hardening
-    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77   # future profile, disabled
+    image: clickhouse/clickhouse-server:25.8@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
     user: "101:101"
     environment:
       CLICKHOUSE_SKIP_USER_SETUP: "1"
     volumes:
       - ${DATA_DIR}/clickhouse:/var/lib/clickhouse
       - ./clickhouse/config.d/hardening.xml:/etc/clickhouse-server/config.d/hardening.xml:ro
+      - ./clickhouse/config.d/tls.xml:/etc/clickhouse-server/config.d/tls.xml:ro
       - ./clickhouse/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+      - ./clickhouse/tls/server.crt:/etc/clickhouse-server/tls/server.crt:ro
+      - ./clickhouse/tls/server.key:/etc/clickhouse-server/tls/server.key:ro
+      - ./postgres/tls/ca.crt:/etc/clickhouse-server/tls/ca.crt:ro
     tmpfs: ["/tmp:size=256m", "/var/log/clickhouse-server:size=64m"]
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
-    networks: [future_data]
+    networks: [backend]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      # HTTPS with the server certificate verified against the setup CA under the
+      # name "clickhouse" (Docker DNS resolves the container's own service name).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--no-proxy", "--https-only",
+             "--ca-certificate=/etc/clickhouse-server/tls/ca.crt", "https://clickhouse:8443/ping"]
       interval: 15s
       timeout: 5s
       retries: 10
+      start_period: 30s
     deploy:
-      resources: { limits: { cpus: "${CLICKHOUSE_CPUS:-2}", memory: "${CLICKHOUSE_MEMORY:-4G}", pids: 2048 } }
+      resources: { limits: { cpus: "${CLICKHOUSE_CPUS:-2}", memory: "${CLICKHOUSE_MEMORY:-3G}", pids: 2048 } }
 
 networks:
   edge:            # Caddy <-> app and auth. Not internal, because Caddy publishes 443.
     ipam:
       # Dynamic addresses come from EDGE_DYNAMIC_RANGE so they never take CADDY_IP.
       config: [{ subnet: "${EDGE_SUBNET}", ip_range: "${EDGE_DYNAMIC_RANGE}" }]
-  backend:         # Databases. No route to the internet at all.
+  backend:         # Databases (PostgreSQL, ClickHouse). No route to the internet at all.
     internal: true
     ipam:
       config: [{ subnet: "${BACKEND_SUBNET}" }]
@@ -242,8 +279,6 @@ networks:
     internal: true
     ipam:
       config: [{ subnet: "${COLLECT_DB_SUBNET}" }]
-  future_data:
-    internal: true
   egress:          # Outbound HTTPS for Entra ID (auth) and S3 (worker) only (nftables enforces ports).
     driver: bridge
 
@@ -260,3 +295,5 @@ secrets:
   oidc_client_secret: { file: ./secrets/oidc_client_secret }
   s3_access_key:      { file: ./secrets/s3_access_key }
   s3_secret_key:      { file: ./secrets/s3_secret_key }
+  ch_admin_password:  { file: ./secrets/ch_admin_password }
+  ch_reader_password: { file: ./secrets/ch_reader_password }

@@ -1,0 +1,24 @@
+<clickhouse>
+    <!-- HTTPS (8443) is the ONLY listener: plaintext HTTP and native TCP are removed,
+         and no secure native port is opened. Certificate: setup.sh, signed by the
+         setup CA, SAN "clickhouse". -->
+    <http_port remove="1"/>
+    <tcp_port remove="1"/>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/tls/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/tls/server.key</privateKeyFile>
+            <!-- TLS 1.2 and 1.3 only; AEAD ciphers with forward secrecy for TLS 1.2. -->
+            <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+            <cipherList>ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256</cipherList>
+            <preferServerCiphers>true</preferServerCiphers>
+            <verificationMode>none</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+            <cacheSessions>true</cacheSessions>
+        </server>
+        <client>
+            <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+        </client>
+    </openSSL>
+</clickhouse>

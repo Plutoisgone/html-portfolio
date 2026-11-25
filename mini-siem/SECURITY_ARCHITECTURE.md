@@ -8,14 +8,15 @@ this environment · **[P]** proposed for a later phase.
 | Service | Image (pinned) | User | Networks | Secrets mounted | Limits |
 |---|---|---|---|---|---|
 | caddy | `caddy:2.11.9-alpine@sha256:003a97…` | 10002 | edge (publishes `SIEM_BIND_IP:443` only) | none | 1 CPU, 256 MiB, 256 pids |
-| app | `mini-siem-app:local` (python 3.12 slim trixie `@sha256:37fc60…`) | 10001 | edge, backend, egress (unused since Phase 1) | db_app | 2 CPU, 512 MiB |
+| app | `mini-siem-app:local` (python 3.12 slim trixie `@sha256:37fc60…`) | 10001 | edge, backend, egress (unused since Phase 1) | db_app, ch_reader | 2 CPU, 512 MiB |
 | auth (login service, Phase 1, N12) | same image, `siem.auth_main:create_app` | 10001 | edge, backend, egress (Entra ID) | db_auth, session (OIDC state key), oidc | 1 CPU, 256 MiB |
 | worker | same image | 10001 | backend, egress | db_worker, checkpoint key, s3 keys | 1 CPU, 384 MiB |
 | migrate | same image (one-shot) | 10001 | backend | db_owner | 1 CPU, 256 MiB |
+| ch_migrate | same image (one-shot, `siem.ch_schema`) | 10001 | backend | ch_admin | 0.5 CPU, 128 MiB |
 | emergency | same image (CLI, on demand) | 10001 | backend | db_emergency | 0.5 CPU, 128 MiB |
 | postgres | `mini-siem-postgres:local` (postgres 17 alpine `@sha256:f9cf3e…`, no gosu) | 70 | backend, collect_db | bootstrap + role passwords (init) | 2 CPU, 1 GiB |
 | collector (opt-in) | same app image | 10001 | collect_edge, collect_db | db_ingest | 1 CPU, 256 MiB |
-| clickhouse (disabled) | `clickhouse-server:25.8@sha256:0152dd…` | 101 | future_data (internal) | — | configurable |
+| clickhouse | `clickhouse-server:25.8@sha256:0152dd…` | 101 | backend (HTTPS 8443 only, cert from the setup CA) | none (users.xml holds hashes) | `CLICKHOUSE_CPUS`/`CLICKHOUSE_MEMORY` (2 CPU, 3 GiB) |
 
 All services: `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges`, tmpfs `/tmp`, json-file log
 rotation. **[V]** by `deploy/verify-deployment.sh` (kernel-level CapEff=0, NoNewPrivs=1, Seccomp mode 2,
